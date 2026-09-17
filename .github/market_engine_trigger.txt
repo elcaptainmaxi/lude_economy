@@ -1,1 +1,0 @@
-Instalar motor cripto 2.0 y verificar simulaciones con regímenes importados correctamente. Reintento 2.

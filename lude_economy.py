@@ -19,6 +19,7 @@ from discord.ext import commands, tasks
 
 GUILD_ID = 1545821075525603358
 TESTER_ROLE_ID = 1545942284745576488
+ADMIN_OWNER_ID = 1006704642618568735  # Cambiá este ID para transferir administración.
 DB_PATH = "lude_economy.db"
 
 COLOR = discord.Color.from_rgb(88, 101, 242)
@@ -64,6 +65,14 @@ BANK_HISTORY_KEEP = 10
 CRYPTO_UPDATE_SECONDS = 5 * 60
 CRYPTO_FEE_RATE = 0.01
 CRYPTO_HISTORY_KEEP = 288  # 24 horas a 5 min por tick.
+CRYPTO_DYNAMIC_RATE = 0.002  # Adaptación base del fundamental por tick.
+CRYPTO_STABLE_BOOST = 2.5  # Acelera la adaptación cuando consolida.
+CRYPTO_FUNDAMENTAL_MAX_STEP = 0.008  # Movimiento máximo por tick del fundamental.
+CRYPTO_REGIME_SWITCH = 0.035  # Probabilidad base de cambiar de régimen.
+CRYPTO_SHOCK_CHANCE = 0.003  # Evento extraordinario, común a todo el mercado.
+CRYPTO_GLOBAL_INFLUENCE = 0.12  # Máxima influencia de la tendencia común.
+CRYPTO_UP_EMOJI_ID = 1550285735305941022
+CRYPTO_DOWN_EMOJI_ID = 1550285765584625845
 
 BANK_LEVELS = {
     1: {"capacity": 10_000, "upgrade_cost": 0},
@@ -460,9 +469,17 @@ def build_setting_specs() -> dict[str, SettingSpec]:
         add_dict(f"crime.{crime_id}.fine_max_pct", "crime", f"{cfg['name']} · multa máxima (% salario)", "CRIME_CATEGORIES", (crime_id, "fine", 1), cfg["fine"][1] * 100, scale=0.01, minimum=0, maximum=10000)
         add_dict(f"crime.{crime_id}.bail_pct", "crime", f"{cfg['name']} · fianza (% salario)", "CRIME_CATEGORIES", (crime_id, "bail"), cfg["bail"] * 100, scale=0.01, minimum=0, maximum=10000)
 
+    # Motor cripto 2.0; se pueden modificar desde /lude admin.
+    add_global("crypto.dynamic_rate", "crypto", "Adaptación base del fundamental por tick", "CRYPTO_DYNAMIC_RATE", 0.002, minimum=0, maximum=0.03)
+    add_global("crypto.stable_boost", "crypto", "Aceleración cuando consolida", "CRYPTO_STABLE_BOOST", 2.5, minimum=1, maximum=8)
+    add_global("crypto.fundamental_max_step_pct", "crypto", "Variación máxima del fundamental por tick (%)", "CRYPTO_FUNDAMENTAL_MAX_STEP", 0.8, scale=0.01, minimum=0, maximum=5)
+    add_global("crypto.regime_switch_pct", "crypto", "Cambio base de régimen por tick (%)", "CRYPTO_REGIME_SWITCH", 3.5, scale=0.01, minimum=0, maximum=100)
+    add_global("crypto.shock_chance_pct", "crypto", "Probabilidad de shock global por tick (%)", "CRYPTO_SHOCK_CHANCE", 0.3, scale=0.01, minimum=0, maximum=10)
+    add_global("crypto.global_influence", "crypto", "Influencia del mercado global", "CRYPTO_GLOBAL_INFLUENCE", 0.12, minimum=0, maximum=1)
+
     # Criptomonedas. auto_min/max mantienen exactamente los rangos originales por tick.
     for symbol, cfg in CRYPTO_CONFIG.items():
-        add_dict(f"crypto.{symbol}.fundamental", "crypto", f"{symbol} · precio fundamental", "CRYPTO_CONFIG", (symbol, "initial"), cfg["initial"], minimum=0.01)
+        add_dict(f"crypto.{symbol}.fundamental", "crypto", f"{symbol} · fijar fundamental manualmente", "CRYPTO_CONFIG", (symbol, "initial"), cfg["initial"], minimum=0.01)
         add_dict(f"crypto.{symbol}.auto_min_pct", "crypto", f"{symbol} · volatilidad mínima por tick (%)", "CRYPTO_CONFIG", (symbol, "auto_min"), cfg["auto_min"] * 100, scale=0.01, minimum=0, maximum=100)
         add_dict(f"crypto.{symbol}.auto_max_pct", "crypto", f"{symbol} · volatilidad máxima por tick (%)", "CRYPTO_CONFIG", (symbol, "auto_max"), cfg["auto_max"] * 100, scale=0.01, minimum=0, maximum=100)
         add_dict(f"crypto.{symbol}.player_max_pct", "crypto", f"{symbol} · impacto máximo jugadores (%)", "CRYPTO_CONFIG", (symbol, "player_max"), cfg["player_max"] * 100, scale=0.01, minimum=0, maximum=100)
@@ -945,6 +962,97 @@ class CoinflipView(discord.ui.View):
                 pass
 
 
+
+# ============================================================
+# LUDE MARKET ENGINE 2.0 · estado persistente, función pura
+# ============================================================
+
+MARKET_REGIMES = ("bull", "bear", "sideways", "storm")
+MARKET_REGIME_LABELS = {
+    "bull": "📈 Alcista", "bear": "📉 Bajista",
+    "sideways": "↔️ Consolidación", "storm": "⚡ Volatilidad",
+}
+
+
+def market_engine_step(price, cfg, state, history, buy, sell, global_sentiment, shock=0.0, rng=None):
+    """Avanza un tick SIN modificar saldos; devuelve (precio, nuevo estado).
+
+    Mantiene auto_min/auto_max originales como límites del movimiento automático;
+    jugadores, momentum y shocks son componentes independientes y acotados.
+    """
+    rng = rng or random
+    price = max(0.01, float(price))
+    fundamental = max(0.01, float(state["fundamental"]))
+    regime = state["regime"] if state["regime"] in MARKET_REGIMES else "sideways"
+    age = max(0, int(state["regime_ticks"])) + 1
+    volatility = max(0.0, min(1.0, float(state["volatility"])))
+    pressure = max(-1.0, min(1.0, float(state["pressure"])))
+    prices = [max(0.01, float(p)) for p in history if float(p) > 0]
+    if not prices or abs(prices[-1] - price) > max(0.0001, price * 1e-8):
+        prices.append(price)
+    returns = [math.log(b / a) for a, b in zip(prices[:-1], prices[1:])]
+    momentum = sum(returns[-4:]) / min(4, len(returns)) if returns else 0.0
+    spread_prices = prices[-12:]
+    spread = (max(spread_prices) / min(spread_prices) - 1) if len(spread_prices) >= 3 else 1.0
+    stable = len(spread_prices) >= 8 and spread < max(0.025, cfg["auto_max"] * 1.4)
+    stable_ticks = (int(state["stable_ticks"]) + 1) if stable else 0
+
+    # Transiciones no periódicas: la edad importa, pero no fuerza un ciclo rígido.
+    personality = {"IC": 0.75, "NVA": 1.0, "FLX": 1.35}.get(cfg["symbol"], 1.0)
+    transition = min(0.36, CRYPTO_REGIME_SWITCH * personality + min(age, 100) * 0.0006)
+    if rng.random() < transition:
+        direction = math.tanh(momentum / max(cfg["auto_max"], 0.0001))
+        shared = max(-1.0, min(1.0, global_sentiment))
+        bull_weight = max(0.1, 1.0 + direction + shared * 0.7)
+        bear_weight = max(0.1, 1.0 - direction - shared * 0.7)
+        sideways_weight = 1.8 if stable else 0.9
+        storm_weight = 0.35 + 0.65 * volatility
+        regime = rng.choices(MARKET_REGIMES, weights=[bull_weight, bear_weight, sideways_weight, storm_weight], k=1)[0]
+        age = 0
+
+    volume = max(0.0, buy) + max(0.0, sell)
+    signed = (buy - sell) / volume if volume else 0.0
+    # Impacto sublineal, saturación por liquidez y persistencia decreciente.
+    liquidity = max(1.0, float(cfg["liquidity"]))
+    flow = signed * (math.sqrt(volume) / (math.sqrt(volume) + math.sqrt(liquidity))) if volume else 0.0
+    pressure = max(-1.0, min(1.0, pressure * 0.55 + flow * 0.7))
+    player_move = max(-cfg["player_max"], min(cfg["player_max"], cfg["player_max"] * (flow + 0.20 * pressure)))
+
+    # Adaptación gradual del fundamental: acelerar solo tras estabilización real.
+    speed = CRYPTO_DYNAMIC_RATE * {"IC": 0.6, "NVA": 1.0, "FLX": 1.35}.get(cfg["symbol"], 1.0)
+    if stable_ticks >= 8:
+        speed *= CRYPTO_STABLE_BOOST
+    speed *= 1.0 + min(0.35, volume / (volume + liquidity) * 0.35) if volume else 1.0
+    fundamental_step = max(-CRYPTO_FUNDAMENTAL_MAX_STEP, min(CRYPTO_FUNDAMENTAL_MAX_STEP, speed * math.log(price / fundamental)))
+    fundamental = max(0.01, fundamental * math.exp(fundamental_step))
+
+    # La reversión es débil fuera de una consolidación; no hay precio garantizado.
+    reversion_factor = {"bull": 0.12, "bear": 0.12, "sideways": 0.65, "storm": 0.04}[regime]
+    reversion = -math.tanh(math.log(price / fundamental) * cfg["reversion_strength"]) * 0.20 * reversion_factor
+    trend = {"bull": 0.17, "bear": -0.17, "sideways": 0.0, "storm": 0.0}[regime]
+    momentum_bias = math.tanh(momentum / max(cfg["auto_max"], 0.0001)) * cfg["momentum_strength"] * 0.15
+    shared_bias = max(-0.12, min(0.12, global_sentiment * CRYPTO_GLOBAL_INFLUENCE))
+    up_probability = max(0.08, min(0.92, 0.5 + trend + reversion + momentum_bias + shared_bias))
+
+    # Agrupamiento de volatilidad sin alterar los rangos auto_min/auto_max.
+    volatility = max(0.0, min(1.0, volatility * 0.84 + abs(momentum) / max(cfg["auto_max"], 0.0001) * 0.12 + abs(shock) * 1.8))
+    floor, ceiling = sorted((max(0.0, cfg["auto_min"]), max(0.0, cfg["auto_max"])))
+    sample = rng.random()
+    if regime == "storm" or volatility > 0.70:
+        sample = max(sample, rng.random())
+    elif regime == "sideways" and volatility < 0.22:
+        sample = min(sample, rng.random())
+    magnitude = floor + (ceiling - floor) * sample
+    auto_move = magnitude if rng.random() < up_probability else -magnitude
+    momentum_move = max(-cfg["momentum_cap"], min(cfg["momentum_cap"], momentum * cfg["momentum_strength"] * (0.7 if regime == "sideways" else 1.0)))
+    shock_move = max(-ceiling * 0.6, min(ceiling * 0.6, shock))
+    total_return = max(-0.85, min(1.5, auto_move + momentum_move + player_move + shock_move))
+    new_price = max(0.01, round(price * (1.0 + total_return), 4))
+    return new_price, {
+        "fundamental": fundamental, "regime": regime, "regime_ticks": age,
+        "volatility": volatility, "pressure": pressure, "stable_ticks": stable_ticks,
+    }
+
 # ============================================================
 # COG
 # ============================================================
@@ -1110,6 +1218,31 @@ class LudeEconomy(commands.Cog):
                         (symbol, cfg["initial"], now),
                     )
 
+            # Migración aditiva: no toca precios ni tenencias existentes.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS crypto_engine_state (
+                    symbol TEXT PRIMARY KEY,
+                    fundamental REAL NOT NULL,
+                    regime TEXT NOT NULL DEFAULT 'sideways',
+                    regime_ticks INTEGER NOT NULL DEFAULT 0,
+                    volatility REAL NOT NULL DEFAULT 0.35,
+                    pressure REAL NOT NULL DEFAULT 0,
+                    stable_ticks INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS crypto_global_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    sentiment REAL NOT NULL DEFAULT 0
+                )
+            """)
+            cur.execute("INSERT OR IGNORE INTO crypto_global_state(id, sentiment) VALUES(1, 0)")
+            for symbol, cfg in CRYPTO_CONFIG.items():
+                cur.execute(
+                    "INSERT OR IGNORE INTO crypto_engine_state(symbol, fundamental) VALUES(?, ?)",
+                    (symbol, float(cfg["initial"])),
+                )
+
             conn.commit()
             conn.close()
 
@@ -1257,6 +1390,12 @@ class LudeEconomy(commands.Cog):
                 """,
                 (key, json.dumps(parsed, ensure_ascii=False), updated_by, int(time.time())),
             )
+            if key.startswith("crypto.") and key.endswith(".fundamental"):
+                symbol = key.split(".")[1]
+                conn.execute(
+                    "UPDATE crypto_engine_state SET fundamental = ?, stable_ticks = 0 WHERE symbol = ?",
+                    (float(parsed), symbol),
+                )
             conn.commit()
             conn.close()
         return parsed
@@ -1275,7 +1414,7 @@ class LudeEconomy(commands.Cog):
         return spec.default
 
     def member_is_admin(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == 1006704642618568735
+        return interaction.user.id == ADMIN_OWNER_ID
 
     async def require_admin(self, interaction: discord.Interaction) -> bool:
         if self.member_is_admin(interaction):
@@ -1821,91 +1960,71 @@ class LudeEconomy(commands.Cog):
                 text += f"\n⚖️ Retención judicial sobre ganancia: **{money(withheld)}**."
             return True, text
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=30)
     async def crypto_price_loop(self):
         with self.db_lock:
             conn = self.connect()
-            cur = conn.cursor()
-            cur.execute("BEGIN IMMEDIATE")
-            now = int(time.time())
-
-            for symbol, cfg in CRYPTO_CONFIG.items():
-                row = cur.execute(
-                    "SELECT price, buy_volume, sell_volume, updated_at FROM crypto_market WHERE symbol = ?",
-                    (symbol,),
-                ).fetchone()
-                if not row or now - int(row["updated_at"]) < CRYPTO_UPDATE_SECONDS:
-                    continue
-
-                price = max(0.0001, float(row["price"]))
-                buy = max(0.0, float(row["buy_volume"]))
-                sell = max(0.0, float(row["sell_volume"]))
-                fundamental = max(0.0001, float(cfg["initial"]))
-
-                # Momentum reciente usando hasta los últimos 6 precios.
-                history = cur.execute(
-                    "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY created_at DESC, id DESC LIMIT 6",
-                    (symbol,),
-                ).fetchall()
-                hist_prices = [float(r["price"]) for r in reversed(history)]
-                returns = []
-                for previous, current in zip(hist_prices, hist_prices[1:]):
-                    if previous > 0:
-                        returns.append(current / previous - 1)
-                momentum = sum(returns[-4:]) / len(returns[-4:]) if returns else 0.0
-
-                # Reversión probabilística: NO reduce la volatilidad.
-                # Solo cambia la probabilidad de dirección cuando el precio se aleja
-                # del valor fundamental. La magnitud sigue usando auto_min/auto_max.
-                deviation = math.log(price / fundamental)
-                reversion_bias = -math.tanh(deviation * float(cfg["reversion_strength"])) * 0.35
-                momentum_bias = math.tanh(
-                    momentum / max(float(cfg["auto_max"]), 0.0001)
-                ) * float(cfg["momentum_strength"]) * 0.20
-                up_probability = max(0.08, min(0.92, 0.50 + reversion_bias + momentum_bias))
-
-                auto_magnitude = random.uniform(float(cfg["auto_min"]), float(cfg["auto_max"]))
-                auto_move = auto_magnitude if random.random() < up_probability else -auto_magnitude
-
-                # Presión de jugadores. El volumen pequeño no produce inmediatamente
-                # el impacto máximo; la liquidez define cuánto capital hace falta.
-                total_volume = buy + sell
-                if total_volume > 0:
-                    pressure = (buy - sell) / total_volume
-                    volume_factor = min(1.0, total_volume / max(1.0, float(cfg["liquidity"])))
-                    player_move = pressure * float(cfg["player_max"]) * volume_factor
-                else:
-                    player_move = 0.0
-
-                # El momentum puede extender tendencias/burbujas; tiene un tope propio.
-                momentum_move = momentum * float(cfg["momentum_strength"])
-                momentum_cap = float(cfg["momentum_cap"])
-                momentum_move = max(-momentum_cap, min(momentum_cap, momentum_move))
-
-                total_move = auto_move + player_move + momentum_move
-                new_price = max(0.01, round(price * (1 + total_move), 4))
-
-                cur.execute(
-                    "UPDATE crypto_market SET price = ?, buy_volume = 0, sell_volume = 0, updated_at = ? WHERE symbol = ?",
-                    (new_price, now, symbol),
-                )
-                cur.execute(
-                    "INSERT INTO crypto_history(symbol, price, created_at) VALUES(?, ?, ?)",
-                    (symbol, new_price, now),
-                )
-                cur.execute("""
-                    DELETE FROM crypto_history
-                    WHERE symbol = ?
-                      AND id NOT IN (
-                          SELECT id FROM crypto_history
-                          WHERE symbol = ?
-                          ORDER BY created_at DESC, id DESC
-                          LIMIT ?
-                      )
-                """, (symbol, symbol, int(CRYPTO_HISTORY_KEEP)))
-
-            conn.commit()
-            conn.close()
+            try:
+                cur = conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
+                now = int(time.time())
+                due = []
+                for symbol, cfg in CRYPTO_CONFIG.items():
+                    row = cur.execute(
+                        "SELECT price, buy_volume, sell_volume, updated_at FROM crypto_market WHERE symbol = ?",
+                        (symbol,),
+                    ).fetchone()
+                    if row and now - int(row["updated_at"]) >= CRYPTO_UPDATE_SECONDS:
+                        due.append((symbol, cfg, row))
+                if due:
+                    global_state = cur.execute("SELECT sentiment FROM crypto_global_state WHERE id = 1").fetchone()
+                    old_sentiment = float(global_state["sentiment"]) if global_state else 0.0
+                    # Componente compartido suave, un único evento para todas las monedas.
+                    global_sentiment = max(-1.0, min(1.0, old_sentiment * 0.87 + random.uniform(-0.15, 0.15)))
+                    shock = random.choice((-1.0, 1.0)) * random.uniform(0.025, 0.075) if random.random() < CRYPTO_SHOCK_CHANCE else 0.0
+                    for symbol, cfg, row in due:
+                        prices = cur.execute(
+                            "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY id DESC LIMIT 13",
+                            (symbol,),
+                        ).fetchall()
+                        history = [float(p["price"]) for p in reversed(prices)]
+                        state_row = cur.execute("SELECT * FROM crypto_engine_state WHERE symbol = ?", (symbol,)).fetchone()
+                        if not state_row:
+                            cur.execute("INSERT OR IGNORE INTO crypto_engine_state(symbol, fundamental) VALUES(?, ?)", (symbol, float(cfg["initial"])))
+                            state_row = cur.execute("SELECT * FROM crypto_engine_state WHERE symbol = ?", (symbol,)).fetchone()
+                        state = dict(state_row)
+                        cfg_with_symbol = dict(cfg, symbol=symbol)
+                        new_price, new_state = market_engine_step(
+                            row["price"], cfg_with_symbol, state, history,
+                            max(0.0, float(row["buy_volume"])),
+                            max(0.0, float(row["sell_volume"])), global_sentiment, shock,
+                        )
+                        cur.execute(
+                            "UPDATE crypto_market SET price = ?, buy_volume = 0, sell_volume = 0, updated_at = ? WHERE symbol = ?",
+                            (new_price, now, symbol),
+                        )
+                        cur.execute(
+                            """UPDATE crypto_engine_state SET fundamental = ?, regime = ?, regime_ticks = ?,
+                               volatility = ?, pressure = ?, stable_ticks = ? WHERE symbol = ?""",
+                            (new_state["fundamental"], new_state["regime"], new_state["regime_ticks"],
+                             new_state["volatility"], new_state["pressure"], new_state["stable_ticks"], symbol),
+                        )
+                        cur.execute(
+                            "INSERT INTO crypto_history(symbol, price, created_at) VALUES(?, ?, ?)",
+                            (symbol, new_price, now),
+                        )
+                        cur.execute("""
+                            DELETE FROM crypto_history WHERE symbol = ? AND id NOT IN (
+                                SELECT id FROM crypto_history WHERE symbol = ? ORDER BY id DESC LIMIT ?
+                            )
+                        """, (symbol, symbol, int(CRYPTO_HISTORY_KEEP)))
+                    cur.execute("UPDATE crypto_global_state SET sentiment = ? WHERE id = 1", (global_sentiment,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     @crypto_price_loop.before_loop
     async def before_crypto_loop(self):
@@ -2571,35 +2690,45 @@ class LudeEconomy(commands.Cog):
     # /lude crypto ...
     # ========================================================
 
-    @crypto_group.command(name="mercado", description="Muestra el mercado actual de criptomonedas.")
+    @crypto_group.command(name="mercado", description="Muestra el mercado y las últimas cinco variaciones.")
     async def crypto_mercado(self, interaction: discord.Interaction):
         rows = self.crypto_snapshot()
         embed = discord.Embed(title="📈 Mercado Cripto de Interlude", color=COLOR)
         with self.db_lock:
             conn = self.connect()
-            for row in rows:
-                previous = conn.execute(
-                    "SELECT price FROM crypto_history WHERE symbol = ? AND id != (SELECT MAX(id) FROM crypto_history WHERE symbol = ?) ORDER BY created_at DESC, id DESC LIMIT 1",
-                    (row["symbol"], row["symbol"]),
-                ).fetchone()
-                pct = 0.0
-                if previous and previous["price"]:
-                    pct = (row["price"] / previous["price"] - 1) * 100
-                cfg = CRYPTO_CONFIG[row["symbol"]]
-                deviation = (float(row["price"]) / float(cfg["initial"]) - 1) * 100
-                embed.add_field(
-                    name=f"{row['name']} ({row['symbol']})",
-                    value=(
-                        f"**{money(float(row['price']))}**\n"
-                        f"Último cambio: **{pct:+.2f}%**\n"
-                        f"Vs. fundamental: **{deviation:+.1f}%**"
-                    ),
-                    inline=True,
-                )
-            conn.close()
-        embed.set_footer(
-            text=f"Actualización cada {format_seconds(CRYPTO_UPDATE_SECONDS)} · híbrido + momentum + reversión probabilística"
-        )
+            try:
+                for row in rows:
+                    samples = conn.execute(
+                        "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY id DESC LIMIT 6",
+                        (row["symbol"],),
+                    ).fetchall()
+                    prices = [float(sample["price"]) for sample in reversed(samples)]
+                    movements = []
+                    for previous, current in zip(prices[:-1], prices[1:]):
+                        if current > previous:
+                            movements.append(f"<:crypto_up:{CRYPTO_UP_EMOJI_ID}>")
+                        elif current < previous:
+                            movements.append(f"<:crypto_down:{CRYPTO_DOWN_EMOJI_ID}>")
+                        else:
+                            movements.append("➖")
+                    pct = (prices[-1] / prices[-2] - 1) * 100 if len(prices) >= 2 and prices[-2] > 0 else 0.0
+                    state = conn.execute("SELECT fundamental, regime FROM crypto_engine_state WHERE symbol = ?", (row["symbol"],)).fetchone()
+                    fundamental = float(state["fundamental"]) if state else float(CRYPTO_CONFIG[row["symbol"]]["initial"])
+                    deviation = (float(row["price"]) / max(0.01, fundamental) - 1) * 100
+                    embed.add_field(
+                        name=f"{row['name']} ({row['symbol']})",
+                        value=(
+                            f"**{money(float(row['price']))}**\n"
+                            f"Último cambio: **{pct:+.2f}%**\n"
+                            f"Vs. fundamental: **{deviation:+.1f}%**\n"
+                            f"Estado: **{MARKET_REGIME_LABELS.get(state['regime'], '↔️ Consolidación') if state else '↔️ Consolidación'}**\n"
+                            f"Últimos 5: {' '.join(movements[-5:]) if movements else 'Sin historial'}"
+                        ),
+                        inline=True,
+                    )
+            finally:
+                conn.close()
+        embed.set_footer(text=f"Actualización cada {format_seconds(CRYPTO_UPDATE_SECONDS)} · historial de izquierda (antiguo) a derecha (reciente)")
         await interaction.response.send_message(embed=embed)
 
     @crypto_group.command(name="comprar", description="Compra criptomonedas desde tu Cuenta Principal.")

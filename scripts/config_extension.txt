@@ -1,0 +1,167 @@
+# ============================================================
+# AJUSTES EDITABLES DESDE /lude admin
+# Las claves permitidas se declaran explícitamente; no hay eval ni acceso SQL libre.
+# ============================================================
+
+@dataclass
+class LudeSetting:
+    key: str
+    getter: object
+    setter: object
+    default: object
+    minimum: float = 0
+    maximum: float = 1_000_000_000
+    integer: bool = False
+    choices: tuple = ()
+
+
+def build_lude_settings() -> dict[str, LudeSetting]:
+    registry = {}
+
+    def put(key, getter, setter, minimum=0, maximum=1_000_000_000, integer=False, choices=()):
+        registry[key] = LudeSetting(key, getter, setter, getter(), minimum, maximum, integer, tuple(choices))
+
+    def scalar(key, name, minimum, maximum, integer=True, scale=1):
+        put(
+            key,
+            lambda n=name, s=scale: globals()[n] / s,
+            lambda value, n=name, s=scale, integer=integer: globals().__setitem__(
+                n, int(round(value * s)) if integer else float(value * s)
+            ),
+            minimum, maximum, integer,
+        )
+
+    def field(key, data, name, minimum=0, maximum=1_000_000_000, integer=False, scale=1, choices=()):
+        put(
+            key,
+            lambda d=data, n=name, s=scale: d[n] * s if not isinstance(d[n], str) else d[n],
+            lambda value, d=data, n=name, s=scale: d.__setitem__(n, value / s if not isinstance(value, str) else value),
+            minimum, maximum, integer, choices,
+        )
+
+    def tuple_field(key, data, name, index, minimum, maximum, integer=False):
+        put(
+            key,
+            lambda d=data, n=name, i=index: d[n][i],
+            lambda value, d=data, n=name, i=index: d.__setitem__(
+                n, tuple(value if x == i else old for x, old in enumerate(d[n]))
+            ),
+            minimum, maximum, integer,
+        )
+
+    scalar('work.cooldown_min', 'WORK_COOLDOWN', 0, 1440, scale=60)
+    scalar('crime.cooldown_min', 'CRIME_COOLDOWN', 0, 1440, scale=60)
+    scalar('rob.cooldown_min', 'ROB_COOLDOWN', 0, 1440, scale=60)
+    scalar('rob.protection_min', 'ROB_PROTECTION_SECONDS', 1, 1440, scale=60)
+    scalar('rob.protection_cost', 'ROB_PROTECTION_COST', 0, 10_000_000)
+    scalar('casino.minimum_bet', 'CASINO_MIN_BET', 1, 10_000_000)
+    scalar('casino.coinflip_fee_pct', 'COINFLIP_FEE_RATE', 0, 30, integer=False, scale=100)
+    scalar('judicial.retention_pct', 'JUDICIAL_RATE', 0, 100, integer=False, scale=100)
+    scalar('bank.transfer_fee_pct', 'TRANSFER_FEE_RATE', 0, 50, integer=False, scale=100)
+    scalar('slots.jackpot_base', 'SLOTS_JACKPOT_BASE', 0, 1_000_000_000)
+    scalar('slots.jackpot_contribution_pct', 'SLOTS_JACKPOT_CONTRIBUTION', 0, 50, integer=False, scale=100)
+    scalar('crypto.update_min', 'CRYPTO_UPDATE_SECONDS', 1, 1440, scale=60)
+    scalar('crypto.fee_pct', 'CRYPTO_FEE_RATE', 0, 30, integer=False, scale=100)
+    scalar('crypto.history_keep', 'CRYPTO_HISTORY_KEEP', 4, 100_000)
+    scalar('bank.additional.open_level', 'ADDITIONAL_OPEN_LEVEL', 1, 7)
+    scalar('bank.additional.open_cost', 'ADDITIONAL_OPEN_COST', 0, 1_000_000_000)
+
+    for level, values in BANK_LEVELS.items():
+        field(f'bank.primary.{level}.capacity', values, 'capacity', 1, 1_000_000_000_000, integer=True)
+        if level > 1:
+            field(f'bank.primary.{level}.upgrade_cost', values, 'upgrade_cost', 0, 1_000_000_000, integer=True)
+    for level in ADDITIONAL_UPGRADE_COSTS:
+        put(
+            f'bank.additional.{level}.upgrade_cost',
+            lambda lev=level: ADDITIONAL_UPGRADE_COSTS[lev],
+            lambda val, lev=level: ADDITIONAL_UPGRADE_COSTS.__setitem__(lev, int(val)),
+            0, 1_000_000_000, True,
+        )
+
+    for grade, mult in GRADE_MULTIPLIERS.items():
+        field(f'work.grade.{grade}.salary_multiplier', GRADE_MULTIPLIERS, grade, 0, 10)
+    for grade, mult in GRADE_XP_MULTIPLIERS.items():
+        field(f'work.grade.{grade}.xp_multiplier', GRADE_XP_MULTIPLIERS, grade, 0, 10)
+
+    for job_id, job in JOBS.items():
+        tuple_field(f'jobs.{job_id}.salary_min', job, 'salary', 0, 1, 10_000_000, True)
+        tuple_field(f'jobs.{job_id}.salary_max', job, 'salary', 1, 1, 10_000_000, True)
+        field(f'jobs.{job_id}.level', job, 'level', 0, 100, integer=True)
+        field(f'jobs.{job_id}.payment', job, 'payment', choices=('wallet', 'bank'))
+
+    for cat_id, cat in CRIME_CATEGORIES.items():
+        prefix = f'crime.{cat_id}'
+        field(f'{prefix}.weight', cat, 'weight', 0, 100, integer=True)
+        field(f'{prefix}.success_pct', cat, 'success', 0, 100, scale=100)
+        field(f'{prefix}.arrest_if_fail_pct', cat, 'arrest_if_fail', 0, 100, scale=100)
+        tuple_field(f'{prefix}.reward_min', cat, 'reward', 0, 0, 100)
+        tuple_field(f'{prefix}.reward_max', cat, 'reward', 1, 0, 100)
+        tuple_field(f'{prefix}.fine_min', cat, 'fine', 0, 0, 100)
+        tuple_field(f'{prefix}.fine_max', cat, 'fine', 1, 0, 100)
+        field(f'{prefix}.bail_multiplier', cat, 'bail', 0, 100)
+
+    for symbol, cfg in CRYPTO_CONFIG.items():
+        prefix = f'crypto.{symbol.lower()}'
+        field(f'{prefix}.fundamental', cfg, 'initial', 1, 1_000_000_000)
+        field(f'{prefix}.auto_min_pct', cfg, 'auto_min', 0, 100, scale=100)
+        field(f'{prefix}.auto_max_pct', cfg, 'auto_max', 0, 100, scale=100)
+        field(f'{prefix}.player_max_pct', cfg, 'player_max', 0, 100, scale=100)
+        field(f'{prefix}.reversion_strength', cfg, 'reversion_strength', 0, 10)
+        field(f'{prefix}.momentum_strength', cfg, 'momentum_strength', 0, 10)
+        field(f'{prefix}.momentum_cap_pct', cfg, 'momentum_cap', 0, 100, scale=100)
+        field(f'{prefix}.liquidity', cfg, 'liquidity', 1, 1_000_000_000)
+
+    return registry
+
+
+LUDE_SETTINGS = build_lude_settings()
+
+
+def parse_lude_setting(setting: LudeSetting, raw: str):
+    raw = raw.strip()
+    if setting.choices:
+        if raw not in setting.choices:
+            raise ValueError('Valores permitidos: ' + ', '.join(setting.choices))
+        return raw
+    if setting.integer:
+        if not raw.lstrip('+').isdigit():
+            raise ValueError('Se requiere un número entero positivo o cero.')
+        value = int(raw)
+    else:
+        try:
+            value = float(raw.replace(',', '.'))
+        except ValueError:
+            raise ValueError('Se requiere un número decimal válido.') from None
+        if not math.isfinite(value):
+            raise ValueError('El número debe ser finito.')
+    if not setting.minimum <= value <= setting.maximum:
+        raise ValueError(f'Rango permitido: {setting.minimum:g} a {setting.maximum:g}.')
+    return value
+
+
+def validate_lude_setting(key: str, value, registry: dict, cursor) -> None:
+    if key.endswith('_min'):
+        counterpart = key[:-4] + '_max'
+        if counterpart in registry and value > registry[counterpart].getter():
+            raise ValueError(f'Debe ser ≤ {counterpart}.')
+    if key.endswith('_max'):
+        counterpart = key[:-4] + '_min'
+        if counterpart in registry and value < registry[counterpart].getter():
+            raise ValueError(f'Debe ser ≥ {counterpart}.')
+    if key.startswith('crime.') and key.endswith('.weight'):
+        category = key.split('.')[1]
+        if not any((value if cat_id == category else cfg['weight']) > 0 for cat_id, cfg in CRIME_CATEGORIES.items()):
+            raise ValueError('Al menos una categoría criminal debe tener peso positivo.')
+    if key.startswith('bank.primary.') and key.endswith('.capacity'):
+        level = int(key.split('.')[2])
+        lower = BANK_LEVELS[level - 1]['capacity'] if level > 1 else 0
+        upper = BANK_LEVELS[level + 1]['capacity'] if level < 7 else float('inf')
+        if not lower < value < upper:
+            raise ValueError('La capacidad debe mantener el orden creciente entre niveles.')
+        max_balance = cursor.execute(
+            'SELECT MAX(balance) FROM bank_accounts WHERE level = ?', (level,),
+        ).fetchone()[0] or 0
+        if value < max_balance:
+            raise ValueError('Hay cuentas con un saldo superior a esa nueva capacidad.')
+    if key == 'bank.additional.open_level' and value > 7:
+        raise ValueError('El nivel inicial no puede superar 7.')

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 import random
 import sqlite3
@@ -32,18 +33,37 @@ CRIME_COOLDOWN = 5 * 60  # Fácil de ajustar durante testing.
 ROB_COOLDOWN = 30 * 60
 ROB_PROTECTION_SECONDS = 30 * 60
 ROB_PROTECTION_COST = 1_500
+ROB_THEFT_MIN_PERCENT = 1
+ROB_THEFT_MAX_PERCENT = 65
+ROB_FAIL_FINE_RATE = 0.25
+ROB_MIN_WALLET_SALARY_MULTIPLIER = 2.0
 
 CASINO_MIN_BET = 50
+BLACKJACK_NORMAL_RETURN = 2.0
+BLACKJACK_NATURAL_RETURN = 2.5
+BLACKJACK_DEALER_STAND = 17
+ROULETTE_EVEN_RETURN = 2.0
+ROULETTE_GREEN_RETURN = 36.0
 COINFLIP_FEE_RATE = 0.05
 JUDICIAL_RATE = 0.25
 TRANSFER_FEE_RATE = 0.05
 
 SLOTS_JACKPOT_BASE = 10_000
 SLOTS_JACKPOT_CONTRIBUTION = 0.05
+SLOTS_SYMBOL_WEIGHTS = {"🍒": 40, "🍋": 28, "🔔": 18, "💎": 10, "7️⃣": 4}
+SLOTS_PAYOUTS = {
+    "cherry_pair": 0.5,
+    "cherry_triple": 1.5,
+    "lemon_triple": 2.0,
+    "bell_triple": 3.0,
+    "diamond_triple": 5.0,
+}
 
-CRYPTO_UPDATE_SECONDS = 15 * 60
+BANK_HISTORY_KEEP = 10
+
+CRYPTO_UPDATE_SECONDS = 5 * 60
 CRYPTO_FEE_RATE = 0.01
-CRYPTO_HISTORY_KEEP = 96  # 24 horas a 15 min por tick.
+CRYPTO_HISTORY_KEEP = 288  # 24 horas a 5 min por tick.
 
 BANK_LEVELS = {
     1: {"capacity": 10_000, "upgrade_cost": 0},
@@ -293,16 +313,225 @@ CRYPTO_CONFIG = {
     "IC": {
         "name": "InterCoin", "initial": 1_000.0,
         "auto_min": 0.01, "auto_max": 0.04, "player_max": 0.02,
+        "reversion_strength": 0.38, "momentum_strength": 0.30,
+        "momentum_cap": 0.06, "liquidity": 15_000.0,
     },
     "NVA": {
         "name": "Nova", "initial": 250.0,
         "auto_min": 0.03, "auto_max": 0.09, "player_max": 0.04,
+        "reversion_strength": 0.22, "momentum_strength": 0.40,
+        "momentum_cap": 0.08, "liquidity": 7_500.0,
     },
     "FLX": {
         "name": "Flux", "initial": 50.0,
         "auto_min": 0.07, "auto_max": 0.18, "player_max": 0.06,
+        "reversion_strength": 0.08, "momentum_strength": 0.55,
+        "momentum_cap": 0.10, "liquidity": 3_000.0,
     },
 }
+
+
+# ============================================================
+# CONFIGURACIÓN RUNTIME / ADMIN
+# ============================================================
+
+@dataclass(frozen=True)
+class SettingSpec:
+    key: str
+    category: str
+    label: str
+    value_type: str
+    default: object
+    target_kind: str
+    target_name: str
+    path: tuple = ()
+    scale: float = 1.0
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    choices: tuple = ()
+
+
+def _deep_get(obj, path: tuple):
+    for part in path:
+        obj = obj[part]
+    return obj
+
+
+def _deep_set(obj, path: tuple, value):
+    if not path:
+        return value
+    key = path[0]
+    if len(path) == 1:
+        if isinstance(obj, tuple):
+            clone = list(obj)
+            clone[key] = value
+            return tuple(clone)
+        obj[key] = value
+        return obj
+    child = obj[key]
+    replacement = _deep_set(child, path[1:], value)
+    if replacement is not child:
+        if isinstance(obj, tuple):
+            clone = list(obj)
+            clone[key] = replacement
+            return tuple(clone)
+        obj[key] = replacement
+    return obj
+
+
+def build_setting_specs() -> dict[str, SettingSpec]:
+    specs: dict[str, SettingSpec] = {}
+
+    def add_global(key, category, label, target, default, value_type="float", scale=1.0,
+                   minimum=None, maximum=None, choices=()):
+        specs[key] = SettingSpec(
+            key, category, label, value_type, default, "global", target, (), scale,
+            minimum, maximum, tuple(choices),
+        )
+
+    def add_dict(key, category, label, target, path, default, value_type="float", scale=1.0,
+                 minimum=None, maximum=None, choices=()):
+        specs[key] = SettingSpec(
+            key, category, label, value_type, default, "dict", target, tuple(path), scale,
+            minimum, maximum, tuple(choices),
+        )
+
+    # General / cooldowns. Los tiempos se administran en minutos.
+    add_global("work.cooldown_min", "general", "Cooldown de /work (min)", "WORK_COOLDOWN", 5.0, scale=60, minimum=0, maximum=1440)
+    add_global("crime.cooldown_min", "general", "Cooldown de /crime (min)", "CRIME_COOLDOWN", 5.0, scale=60, minimum=0, maximum=1440)
+    add_global("rob.cooldown_min", "rob", "Cooldown de /rob (min)", "ROB_COOLDOWN", 30.0, scale=60, minimum=0, maximum=10080)
+    add_global("rob.protection_min", "rob", "Duración protección anti-robo (min)", "ROB_PROTECTION_SECONDS", 30.0, scale=60, minimum=1, maximum=10080)
+    add_global("rob.protection_cost", "rob", "Costo protección anti-robo", "ROB_PROTECTION_COST", 1500, "int", minimum=0, maximum=100_000_000)
+    add_global("rob.theft_min_pct", "rob", "Porcentaje mínimo que puede intentar robar", "ROB_THEFT_MIN_PERCENT", 1, "int", minimum=1, maximum=99)
+    add_global("rob.theft_max_pct", "rob", "Porcentaje máximo que puede intentar robar", "ROB_THEFT_MAX_PERCENT", 65, "int", minimum=1, maximum=99)
+    add_global("rob.fail_fine_pct", "rob", "Multa por robo fallido (% del intento)", "ROB_FAIL_FINE_RATE", 25.0, scale=0.01, minimum=0, maximum=1000)
+    add_global("rob.min_wallet_salary_multiplier", "rob", "Wallet mínimo de víctima (x salario)", "ROB_MIN_WALLET_SALARY_MULTIPLIER", 2.0, minimum=0, maximum=100)
+    add_global("casino.min_bet", "casino", "Apuesta mínima del casino", "CASINO_MIN_BET", 50, "int", minimum=1, maximum=100_000_000)
+    add_global("casino.blackjack.normal_return", "casino", "Blackjack · retorno victoria normal (x)", "BLACKJACK_NORMAL_RETURN", 2.0, minimum=0, maximum=100)
+    add_global("casino.blackjack.natural_return", "casino", "Blackjack · retorno natural (x)", "BLACKJACK_NATURAL_RETURN", 2.5, minimum=0, maximum=100)
+    add_global("casino.blackjack.dealer_stand", "casino", "Blackjack · dealer se planta en", "BLACKJACK_DEALER_STAND", 17, "int", minimum=12, maximum=21)
+    add_global("casino.roulette.even_return", "casino", "Ruleta · retorno rojo/negro (x)", "ROULETTE_EVEN_RETURN", 2.0, minimum=0, maximum=100)
+    add_global("casino.roulette.green_return", "casino", "Ruleta · retorno verde (x)", "ROULETTE_GREEN_RETURN", 36.0, minimum=0, maximum=1000)
+    add_global("casino.coinflip_fee_pct", "casino", "Comisión Coinflip (%)", "COINFLIP_FEE_RATE", 5.0, scale=0.01, minimum=0, maximum=100)
+    add_global("judicial.rate_pct", "general", "Retención/recargo judicial (%)", "JUDICIAL_RATE", 25.0, scale=0.01, minimum=0, maximum=100)
+    add_global("bank.transfer_fee_pct", "bank", "Comisión de transferencias (%)", "TRANSFER_FEE_RATE", 5.0, scale=0.01, minimum=0, maximum=100)
+    add_global("slots.jackpot_base", "casino", "Jackpot base de Slots", "SLOTS_JACKPOT_BASE", 10_000, "int", minimum=0, maximum=1_000_000_000)
+    add_global("slots.jackpot_contribution_pct", "casino", "Aporte al jackpot (%)", "SLOTS_JACKPOT_CONTRIBUTION", 5.0, scale=0.01, minimum=0, maximum=100)
+    for symbol_name, weight in SLOTS_SYMBOL_WEIGHTS.items():
+        symbol_key = {"🍒": "cherry", "🍋": "lemon", "🔔": "bell", "💎": "diamond", "7️⃣": "seven"}[symbol_name]
+        add_dict(f"casino.slots.weight.{symbol_key}", "casino", f"Slots · peso {symbol_name}", "SLOTS_SYMBOL_WEIGHTS", (symbol_name,), weight, minimum=0, maximum=1_000_000)
+    for payout_key, payout in SLOTS_PAYOUTS.items():
+        add_dict(f"casino.slots.payout.{payout_key}", "casino", f"Slots · retorno {payout_key} (x)", "SLOTS_PAYOUTS", (payout_key,), payout, minimum=0, maximum=10000)
+    add_global("bank.history_keep", "bank", "Movimientos bancarios conservados", "BANK_HISTORY_KEEP", 10, "int", minimum=1, maximum=1000)
+    add_global("crypto.update_min", "crypto", "Intervalo de actualización cripto (min)", "CRYPTO_UPDATE_SECONDS", 5.0, scale=60, minimum=1, maximum=1440)
+    add_global("crypto.fee_pct", "crypto", "Comisión compra/venta cripto (%)", "CRYPTO_FEE_RATE", 1.0, scale=0.01, minimum=0, maximum=100)
+    add_global("crypto.history_keep", "crypto", "Registros históricos por cripto", "CRYPTO_HISTORY_KEEP", 288, "int", minimum=2, maximum=10000)
+
+    # Bank of Interlude.
+    for level, cfg in BANK_LEVELS.items():
+        add_dict(f"bank.level.{level}.capacity", "bank", f"Capacidad banco nivel {level}", "BANK_LEVELS", (level, "capacity"), cfg["capacity"], "int", minimum=1)
+        add_dict(f"bank.level.{level}.upgrade_cost", "bank", f"Costo mejora banco nivel {level}", "BANK_LEVELS", (level, "upgrade_cost"), cfg["upgrade_cost"], "int", minimum=0)
+    add_global("bank.additional.open_level", "bank", "Nivel inicial cuenta adicional", "ADDITIONAL_OPEN_LEVEL", ADDITIONAL_OPEN_LEVEL, "int", minimum=1, maximum=7)
+    add_global("bank.additional.open_cost", "bank", "Costo apertura cuenta adicional", "ADDITIONAL_OPEN_COST", ADDITIONAL_OPEN_COST, "int", minimum=0)
+    for level, cost in ADDITIONAL_UPGRADE_COSTS.items():
+        add_dict(f"bank.additional.level.{level}.upgrade_cost", "bank", f"Costo adicional nivel {level}", "ADDITIONAL_UPGRADE_COSTS", (level,), cost, "int", minimum=0)
+
+    # Calificaciones laborales.
+    for grade, value in GRADE_MULTIPLIERS.items():
+        add_dict(f"work.grade.{grade}.salary_multiplier", "work", f"Multiplicador salario nota {grade}", "GRADE_MULTIPLIERS", (grade,), value, minimum=0, maximum=20)
+    for grade, value in GRADE_XP_MULTIPLIERS.items():
+        add_dict(f"work.grade.{grade}.xp_multiplier", "work", f"Multiplicador XP nota {grade}", "GRADE_XP_MULTIPLIERS", (grade,), value, minimum=0, maximum=20)
+
+    # Todos los empleos.
+    for job_id, job in JOBS.items():
+        add_dict(f"job.{job_id}.level", "jobs", f"{job['name']} · Work Level", "JOBS", (job_id, "level"), job["level"], "int", minimum=0, maximum=100)
+        add_dict(f"job.{job_id}.salary_min", "jobs", f"{job['name']} · salario mínimo", "JOBS", (job_id, "salary", 0), job["salary"][0], "int", minimum=0)
+        add_dict(f"job.{job_id}.salary_max", "jobs", f"{job['name']} · salario máximo", "JOBS", (job_id, "salary", 1), job["salary"][1], "int", minimum=0)
+        add_dict(f"job.{job_id}.payment", "jobs", f"{job['name']} · destino de pago", "JOBS", (job_id, "payment"), job["payment"], "str", choices=("wallet", "bank"))
+
+    # Crime.
+    for crime_id, cfg in CRIME_CATEGORIES.items():
+        add_dict(f"crime.{crime_id}.weight", "crime", f"{cfg['name']} · peso de aparición", "CRIME_CATEGORIES", (crime_id, "weight"), cfg["weight"], minimum=0, maximum=10000)
+        add_dict(f"crime.{crime_id}.success_pct", "crime", f"{cfg['name']} · éxito (%)", "CRIME_CATEGORIES", (crime_id, "success"), cfg["success"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crime.{crime_id}.arrest_if_fail_pct", "crime", f"{cfg['name']} · arresto si falla (%)", "CRIME_CATEGORIES", (crime_id, "arrest_if_fail"), cfg["arrest_if_fail"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crime.{crime_id}.reward_min_pct", "crime", f"{cfg['name']} · recompensa mínima (% salario)", "CRIME_CATEGORIES", (crime_id, "reward", 0), cfg["reward"][0] * 100, scale=0.01, minimum=0, maximum=10000)
+        add_dict(f"crime.{crime_id}.reward_max_pct", "crime", f"{cfg['name']} · recompensa máxima (% salario)", "CRIME_CATEGORIES", (crime_id, "reward", 1), cfg["reward"][1] * 100, scale=0.01, minimum=0, maximum=10000)
+        add_dict(f"crime.{crime_id}.fine_min_pct", "crime", f"{cfg['name']} · multa mínima (% salario)", "CRIME_CATEGORIES", (crime_id, "fine", 0), cfg["fine"][0] * 100, scale=0.01, minimum=0, maximum=10000)
+        add_dict(f"crime.{crime_id}.fine_max_pct", "crime", f"{cfg['name']} · multa máxima (% salario)", "CRIME_CATEGORIES", (crime_id, "fine", 1), cfg["fine"][1] * 100, scale=0.01, minimum=0, maximum=10000)
+        add_dict(f"crime.{crime_id}.bail_pct", "crime", f"{cfg['name']} · fianza (% salario)", "CRIME_CATEGORIES", (crime_id, "bail"), cfg["bail"] * 100, scale=0.01, minimum=0, maximum=10000)
+
+    # Criptomonedas. auto_min/max mantienen exactamente los rangos originales por tick.
+    for symbol, cfg in CRYPTO_CONFIG.items():
+        add_dict(f"crypto.{symbol}.fundamental", "crypto", f"{symbol} · precio fundamental", "CRYPTO_CONFIG", (symbol, "initial"), cfg["initial"], minimum=0.01)
+        add_dict(f"crypto.{symbol}.auto_min_pct", "crypto", f"{symbol} · volatilidad mínima por tick (%)", "CRYPTO_CONFIG", (symbol, "auto_min"), cfg["auto_min"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crypto.{symbol}.auto_max_pct", "crypto", f"{symbol} · volatilidad máxima por tick (%)", "CRYPTO_CONFIG", (symbol, "auto_max"), cfg["auto_max"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crypto.{symbol}.player_max_pct", "crypto", f"{symbol} · impacto máximo jugadores (%)", "CRYPTO_CONFIG", (symbol, "player_max"), cfg["player_max"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crypto.{symbol}.reversion_strength", "crypto", f"{symbol} · fuerza de reversión", "CRYPTO_CONFIG", (symbol, "reversion_strength"), cfg["reversion_strength"], minimum=0, maximum=10)
+        add_dict(f"crypto.{symbol}.momentum_strength", "crypto", f"{symbol} · fuerza de momentum", "CRYPTO_CONFIG", (symbol, "momentum_strength"), cfg["momentum_strength"], minimum=0, maximum=10)
+        add_dict(f"crypto.{symbol}.momentum_cap_pct", "crypto", f"{symbol} · tope momentum por tick (%)", "CRYPTO_CONFIG", (symbol, "momentum_cap"), cfg["momentum_cap"] * 100, scale=0.01, minimum=0, maximum=100)
+        add_dict(f"crypto.{symbol}.liquidity", "crypto", f"{symbol} · liquidez de referencia", "CRYPTO_CONFIG", (symbol, "liquidity"), cfg["liquidity"], minimum=1)
+
+    return specs
+
+
+SETTING_SPECS = build_setting_specs()
+SETTING_CATEGORIES = ("general", "work", "jobs", "bank", "crime", "rob", "casino", "crypto")
+
+
+def _setting_raw_value(spec: SettingSpec):
+    if spec.target_kind == "global":
+        return globals()[spec.target_name]
+    return _deep_get(globals()[spec.target_name], spec.path)
+
+
+def setting_display_value(spec: SettingSpec):
+    raw = _setting_raw_value(spec)
+    if spec.value_type == "str":
+        return str(raw)
+    return raw / spec.scale
+
+
+def parse_setting_value(spec: SettingSpec, value):
+    if spec.value_type == "str":
+        parsed = str(value).strip().lower()
+        if spec.choices and parsed not in spec.choices:
+            raise ValueError(f"Valores permitidos: {', '.join(spec.choices)}")
+        return parsed
+    try:
+        parsed = int(value) if spec.value_type == "int" else float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("El valor debe ser numérico.")
+    if spec.minimum is not None and parsed < spec.minimum:
+        raise ValueError(f"El mínimo permitido es {spec.minimum}.")
+    if spec.maximum is not None and parsed > spec.maximum:
+        raise ValueError(f"El máximo permitido es {spec.maximum}.")
+    return parsed
+
+
+def apply_setting_value(spec: SettingSpec, display_value):
+    parsed = parse_setting_value(spec, display_value)
+    if spec.value_type == "str":
+        raw = parsed
+    else:
+        raw = parsed * spec.scale
+        if spec.value_type == "int" and spec.scale == 1:
+            raw = int(raw)
+    if spec.target_kind == "global":
+        globals()[spec.target_name] = raw
+    else:
+        root = globals()[spec.target_name]
+        replacement = _deep_set(root, spec.path, raw)
+        if replacement is not root:
+            globals()[spec.target_name] = replacement
+    return parsed
+
+
+def format_setting_value(value) -> str:
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value)
 
 
 # ============================================================
@@ -385,8 +614,10 @@ class TesterLudeGroup(app_commands.Group):
         tester_role = interaction.guild.get_role(TESTER_ROLE_ID) if interaction.guild else None
         allowed = (
             isinstance(member, discord.Member)
-            and tester_role is not None
-            and member.top_role.position >= tester_role.position
+            and (
+                member.guild_permissions.administrator
+                or (tester_role is not None and member.top_role.position >= tester_role.position)
+            )
         )
         if allowed:
             return True
@@ -466,8 +697,9 @@ class ProtectionOfferView(discord.ui.View):
         self.cog = cog
         self.victim_id = victim_id
         self.done = False
+        self.buy.label = f"Comprar protección · {money(ROB_PROTECTION_COST)}"
 
-    @discord.ui.button(label="Comprar protección · INT$ 1.500", style=discord.ButtonStyle.primary, emoji="🛡️")
+    @discord.ui.button(label="Comprar protección", style=discord.ButtonStyle.primary, emoji="🛡️")
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.victim_id:
             await interaction.response.send_message("Solo la víctima puede comprar esta protección.", ephemeral=True)
@@ -574,7 +806,7 @@ class BlackjackView(discord.ui.View):
             return
         await self.finish(interaction)
 
-    @discord.ui.button(label="Doblar", style=discord.ButtonStyle.success, emoji="×2")
+    @discord.ui.button(label="Doblar ×2", style=discord.ButtonStyle.success, emoji="✖️")
     async def double(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.finished:
             return
@@ -599,7 +831,7 @@ class BlackjackView(discord.ui.View):
         player_natural = self.is_natural(self.player) and self.bet == self.original_bet
 
         if player_value <= 21:
-            while self.hand_value(self.dealer) < 17:
+            while self.hand_value(self.dealer) < int(BLACKJACK_DEALER_STAND):
                 self.dealer.append(self.deck.pop())
 
         dealer_value = self.hand_value(self.dealer)
@@ -608,13 +840,13 @@ class BlackjackView(discord.ui.View):
         if player_value > 21:
             outcome, total_return = "💥 Te pasaste de 21. Perdiste.", 0
         elif player_natural and not dealer_natural:
-            total_return = int(round(self.bet * 2.5))
+            total_return = int(round(self.bet * BLACKJACK_NATURAL_RETURN))
             outcome = "🖤 Blackjack natural."
         elif dealer_value > 21:
-            total_return = self.bet * 2
+            total_return = int(round(self.bet * BLACKJACK_NORMAL_RETURN))
             outcome = "✅ El dealer se pasó. Ganaste."
         elif player_value > dealer_value:
-            total_return = self.bet * 2
+            total_return = int(round(self.bet * BLACKJACK_NORMAL_RETURN))
             outcome = "✅ Ganaste la mano."
         elif player_value == dealer_value:
             total_return = self.bet
@@ -725,12 +957,25 @@ class LudeEconomy(commands.Cog):
         guild_only=True,
     )
 
+    crypto_group = app_commands.Group(
+        name="crypto",
+        description="Mercado e inversiones en criptomonedas.",
+        parent=lude,
+    )
+
+    admin_group = app_commands.Group(
+        name="admin",
+        description="Configuración administrativa de la economía.",
+        parent=lude,
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db_lock = threading.RLock()
         self.active_work_users: set[int] = set()
         self.bank_reservations: dict[int, int] = {}
         self.init_db()
+        self.load_runtime_settings()
 
     async def cog_load(self):
         if not self.crypto_price_loop.is_running():
@@ -801,6 +1046,15 @@ class LudeEconomy(commands.Cog):
                     balance_after INTEGER NOT NULL DEFAULT 0,
                     details TEXT,
                     created_at INTEGER NOT NULL
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_by INTEGER,
+                    updated_at INTEGER NOT NULL
                 )
             """)
 
@@ -926,9 +1180,113 @@ class LudeEconomy(commands.Cog):
                   SELECT id FROM bank_history
                   WHERE user_id = ?
                   ORDER BY created_at DESC, id DESC
-                  LIMIT 10
+                  LIMIT ?
               )
-        """, (user_id, user_id))
+        """, (user_id, user_id, int(BANK_HISTORY_KEEP)))
+
+    # --------------------------------------------------------
+    # CONFIGURACIÓN RUNTIME / ADMIN
+    # --------------------------------------------------------
+
+    def load_runtime_settings(self):
+        with self.db_lock:
+            conn = self.connect()
+            rows = conn.execute("SELECT key, value FROM economy_settings").fetchall()
+            conn.close()
+        for row in rows:
+            spec = SETTING_SPECS.get(row["key"])
+            if not spec:
+                continue
+            try:
+                value = json.loads(row["value"])
+                apply_setting_value(spec, value)
+            except Exception as exc:
+                print(f"[LudeEconomy] Ajuste inválido ignorado {row['key']}: {exc}")
+
+    def update_runtime_setting(self, key: str, value, updated_by: int):
+        spec = SETTING_SPECS.get(key)
+        if not spec:
+            raise KeyError("Ajuste inexistente")
+        previous_value = setting_display_value(spec)
+        parsed = apply_setting_value(spec, value)
+
+        # Validaciones cruzadas importantes.
+        if key.endswith("salary_min"):
+            job_id = key.split(".")[1]
+            if JOBS[job_id]["salary"][0] > JOBS[job_id]["salary"][1]:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("El salario mínimo no puede superar al salario máximo.")
+        elif key.endswith("salary_max"):
+            job_id = key.split(".")[1]
+            if JOBS[job_id]["salary"][1] < JOBS[job_id]["salary"][0]:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("El salario máximo no puede ser menor al salario mínimo.")
+        elif key.endswith("auto_min_pct"):
+            symbol = key.split(".")[1]
+            if CRYPTO_CONFIG[symbol]["auto_min"] > CRYPTO_CONFIG[symbol]["auto_max"]:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("La volatilidad mínima no puede superar la máxima.")
+        elif key.endswith("auto_max_pct"):
+            symbol = key.split(".")[1]
+            if CRYPTO_CONFIG[symbol]["auto_max"] < CRYPTO_CONFIG[symbol]["auto_min"]:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("La volatilidad máxima no puede ser menor a la mínima.")
+        elif key in {"rob.theft_min_pct", "rob.theft_max_pct"}:
+            if ROB_THEFT_MIN_PERCENT > ROB_THEFT_MAX_PERCENT:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("El porcentaje mínimo de robo no puede superar al máximo.")
+        elif key.startswith("crime.") and key.endswith(".weight"):
+            if sum(max(0, float(c["weight"])) for c in CRIME_CATEGORIES.values()) <= 0:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("Al menos una categoría de crimen debe tener peso mayor que 0.")
+        elif key.startswith("casino.slots.weight."):
+            if sum(max(0, float(w)) for w in SLOTS_SYMBOL_WEIGHTS.values()) <= 0:
+                apply_setting_value(spec, previous_value)
+                raise ValueError("Al menos un símbolo de Slots debe tener peso mayor que 0.")
+
+        with self.db_lock:
+            conn = self.connect()
+            conn.execute(
+                """
+                INSERT INTO economy_settings(key, value, updated_by, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(parsed, ensure_ascii=False), updated_by, int(time.time())),
+            )
+            conn.commit()
+            conn.close()
+        return parsed
+
+    def reset_runtime_setting(self, key: str):
+        spec = SETTING_SPECS.get(key)
+        if not spec:
+            raise KeyError("Ajuste inexistente")
+        # Usar la misma validación cruzada de /admin cambiar antes de restaurar.
+        self.update_runtime_setting(key, spec.default, 0)
+        with self.db_lock:
+            conn = self.connect()
+            conn.execute("DELETE FROM economy_settings WHERE key = ?", (key,))
+            conn.commit()
+            conn.close()
+        return spec.default
+
+    @staticmethod
+    def member_is_admin(interaction: discord.Interaction) -> bool:
+        return isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator
+
+    async def require_admin(self, interaction: discord.Interaction) -> bool:
+        if self.member_is_admin(interaction):
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "⛔ Este comando requiere el permiso **Administrador**.",
+                ephemeral=True,
+            )
+        return False
 
     # --------------------------------------------------------
     # ECONOMÍA / DEUDA
@@ -1244,7 +1602,7 @@ class LudeEconomy(commands.Cog):
                 (receiver_new, receiver_id),
             )
             self.log_bank(cur, sender_id, "primary", "transfer_sent", amount, sender_new, f"Transferencia a {receiver_id}")
-            self.log_bank(cur, sender_id, "primary", "transfer_fee", fee, sender_new, f"Comisión 5% por transferencia a {receiver_id}")
+            self.log_bank(cur, sender_id, "primary", "transfer_fee", fee, sender_new, f"Comisión {TRANSFER_FEE_RATE * 100:g}% por transferencia a {receiver_id}")
             self.log_bank(cur, receiver_id, "primary", "transfer_received", amount, receiver_new, f"Transferencia de {sender_id}; retención {withheld}")
             conn.commit(); conn.close()
 
@@ -1283,7 +1641,7 @@ class LudeEconomy(commands.Cog):
             )
             conn.commit(); conn.close()
 
-            text = f"🛡️ Protección activada por **30 minutos**. Costo: **{money(ROB_PROTECTION_COST)}**."
+            text = f"🛡️ Protección activada por **{format_seconds(ROB_PROTECTION_SECONDS)}**. Costo: **{money(ROB_PROTECTION_COST)}**."
             if surcharge:
                 text += f" Recargo judicial: **{money(surcharge)}**."
             return True, text
@@ -1377,7 +1735,7 @@ class LudeEconomy(commands.Cog):
             market = cur.execute("SELECT price FROM crypto_market WHERE symbol = ?", (symbol,)).fetchone()
             if bank["balance"] < total:
                 conn.rollback(); conn.close()
-                return False, f"Necesitas **{money(total)}** en tu Cuenta Principal (incluye 1% de comisión)."
+                return False, f"Necesitas **{money(total)}** en tu Cuenta Principal (incluye {CRYPTO_FEE_RATE * 100:g}% de comisión)."
             quantity = amount / float(market["price"])
             new_balance = int(bank["balance"]) - total
             cur.execute(
@@ -1470,30 +1828,62 @@ class LudeEconomy(commands.Cog):
             cur = conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
             now = int(time.time())
+
             for symbol, cfg in CRYPTO_CONFIG.items():
                 row = cur.execute(
                     "SELECT price, buy_volume, sell_volume, updated_at FROM crypto_market WHERE symbol = ?",
                     (symbol,),
                 ).fetchone()
-                if now - int(row["updated_at"]) < CRYPTO_UPDATE_SECONDS:
+                if not row or now - int(row["updated_at"]) < CRYPTO_UPDATE_SECONDS:
                     continue
-                price = float(row["price"])
-                buy = float(row["buy_volume"])
-                sell = float(row["sell_volume"])
 
-                auto_move = random.uniform(cfg["auto_min"], cfg["auto_max"])
-                if random.random() < 0.5:
-                    auto_move *= -1
+                price = max(0.0001, float(row["price"]))
+                buy = max(0.0, float(row["buy_volume"]))
+                sell = max(0.0, float(row["sell_volume"]))
+                fundamental = max(0.0001, float(cfg["initial"]))
 
+                # Momentum reciente usando hasta los últimos 6 precios.
+                history = cur.execute(
+                    "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY created_at DESC, id DESC LIMIT 6",
+                    (symbol,),
+                ).fetchall()
+                hist_prices = [float(r["price"]) for r in reversed(history)]
+                returns = []
+                for previous, current in zip(hist_prices, hist_prices[1:]):
+                    if previous > 0:
+                        returns.append(current / previous - 1)
+                momentum = sum(returns[-4:]) / len(returns[-4:]) if returns else 0.0
+
+                # Reversión probabilística: NO reduce la volatilidad.
+                # Solo cambia la probabilidad de dirección cuando el precio se aleja
+                # del valor fundamental. La magnitud sigue usando auto_min/auto_max.
+                deviation = math.log(price / fundamental)
+                reversion_bias = -math.tanh(deviation * float(cfg["reversion_strength"])) * 0.35
+                momentum_bias = math.tanh(
+                    momentum / max(float(cfg["auto_max"]), 0.0001)
+                ) * float(cfg["momentum_strength"]) * 0.20
+                up_probability = max(0.08, min(0.92, 0.50 + reversion_bias + momentum_bias))
+
+                auto_magnitude = random.uniform(float(cfg["auto_min"]), float(cfg["auto_max"]))
+                auto_move = auto_magnitude if random.random() < up_probability else -auto_magnitude
+
+                # Presión de jugadores. El volumen pequeño no produce inmediatamente
+                # el impacto máximo; la liquidez define cuánto capital hace falta.
                 total_volume = buy + sell
                 if total_volume > 0:
                     pressure = (buy - sell) / total_volume
-                    player_move = pressure * cfg["player_max"]
+                    volume_factor = min(1.0, total_volume / max(1.0, float(cfg["liquidity"])))
+                    player_move = pressure * float(cfg["player_max"]) * volume_factor
                 else:
                     player_move = 0.0
 
-                total_move = auto_move + player_move
-                new_price = max(1.0, round(price * (1 + total_move), 4))
+                # El momentum puede extender tendencias/burbujas; tiene un tope propio.
+                momentum_move = momentum * float(cfg["momentum_strength"])
+                momentum_cap = float(cfg["momentum_cap"])
+                momentum_move = max(-momentum_cap, min(momentum_cap, momentum_move))
+
+                total_move = auto_move + player_move + momentum_move
+                new_price = max(0.01, round(price * (1 + total_move), 4))
 
                 cur.execute(
                     "UPDATE crypto_market SET price = ?, buy_volume = 0, sell_volume = 0, updated_at = ? WHERE symbol = ?",
@@ -1512,8 +1902,10 @@ class LudeEconomy(commands.Cog):
                           ORDER BY created_at DESC, id DESC
                           LIMIT ?
                       )
-                """, (symbol, symbol, CRYPTO_HISTORY_KEEP))
-            conn.commit(); conn.close()
+                """, (symbol, symbol, int(CRYPTO_HISTORY_KEEP)))
+
+            conn.commit()
+            conn.close()
 
     @crypto_price_loop.before_loop
     async def before_crypto_loop(self):
@@ -1783,8 +2175,8 @@ class LudeEconomy(commands.Cog):
         with self.db_lock:
             conn = self.connect()
             rows = conn.execute(
-                "SELECT * FROM bank_history WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 10",
-                (uid,),
+                "SELECT * FROM bank_history WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (uid, int(BANK_HISTORY_KEEP)),
             ).fetchall()
             conn.close()
         if not rows:
@@ -1803,7 +2195,7 @@ class LudeEconomy(commands.Cog):
         for row in rows:
             when = f"<t:{row['created_at']}:R>"
             lines.append(f"**{labels.get(row['action'], row['action'])}** · {money(row['amount'])} · saldo {money(row['balance_after'])} · {when}")
-        embed = discord.Embed(title="📜 Bank of Interlude · Últimos 10", description="\n".join(lines), color=COLOR)
+        embed = discord.Embed(title=f"📜 Bank of Interlude · Últimos {int(BANK_HISTORY_KEEP)}", description="\n".join(lines), color=COLOR)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @lude.command(name="deuda", description="Consulta tu Deuda Judicial.")
@@ -1812,7 +2204,7 @@ class LudeEconomy(commands.Cog):
         embed = discord.Embed(title="⚖️ Deuda Judicial", color=COLOR_DANGER if user["judicial_debt"] else COLOR_SUCCESS)
         embed.description = f"Deuda actual: **{money(user['judicial_debt'])}**."
         if user["judicial_debt"]:
-            embed.add_field(name="Retención", value="25% de ingresos legítimos y recargo en compras hasta cancelar la deuda.", inline=False)
+            embed.add_field(name="Retención", value=f"{JUDICIAL_RATE * 100:g}% de ingresos legítimos y recargo en compras hasta cancelar la deuda.", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @lude.command(name="pagar-deuda", description="Paga voluntariamente parte o toda tu Deuda Judicial.")
@@ -1974,7 +2366,7 @@ class LudeEconomy(commands.Cog):
 
         # La protección se verifica antes del mínimo: intentar robar a una persona protegida es una trampa.
         if victim["protection_until"] > now:
-            theft_percent = random.randint(1, 65)
+            theft_percent = random.randint(int(ROB_THEFT_MIN_PERCENT), int(ROB_THEFT_MAX_PERCENT))
             bail = max(1, int(round(self.salary_reference(thief_id) * rob_bail_multiplier(theft_percent))))
             with self.db_lock:
                 conn = self.connect(); conn.execute("UPDATE economy_users SET last_rob_at = ? WHERE user_id = ?", (now, thief_id)); conn.commit(); conn.close()
@@ -1984,7 +2376,7 @@ class LudeEconomy(commands.Cog):
             )
             return
 
-        min_wallet = self.salary_reference(victim_id) * 2
+        min_wallet = int(round(self.salary_reference(victim_id) * ROB_MIN_WALLET_SALARY_MULTIPLIER))
         if victim["wallet"] < min_wallet:
             await interaction.response.send_message(
                 f"💸 {usuario.mention} no puede ser robado ahora. Debe llevar al menos **{money(min_wallet)}** en Wallet.\nTu cooldown **no fue consumido**.",
@@ -1992,7 +2384,7 @@ class LudeEconomy(commands.Cog):
             )
             return
 
-        theft_percent = random.randint(1, 65)
+        theft_percent = random.randint(int(ROB_THEFT_MIN_PERCENT), int(ROB_THEFT_MAX_PERCENT))
         success_chance = 100 if theft_percent == 1 else 100 - theft_percent
         attempted = max(1, int(math.floor(victim["wallet"] * theft_percent / 100)))
 
@@ -2021,20 +2413,20 @@ class LudeEconomy(commands.Cog):
             view = ProtectionOfferView(self, victim_id)
             await interaction.response.send_message(content=usuario.mention, embed=embed, view=view)
         else:
-            fine = max(1, int(round(attempted * 0.25)))
+            fine = max(1, int(round(attempted * ROB_FAIL_FINE_RATE)))
             penalty = self.collect_penalty(thief_id, fine)
             protection_until = now + ROB_PROTECTION_SECONDS
             with self.db_lock:
                 conn = self.connect(); conn.execute("UPDATE economy_users SET protection_until = ? WHERE user_id = ?", (protection_until, victim_id)); conn.commit(); conn.close()
             embed.description = (
                 f"❌ El robo falló. <@{thief_id}> fue multado con **{money(fine)}**.\n"
-                f"🛡️ {usuario.mention} recibió **30 minutos de protección gratis**."
+                f"🛡️ {usuario.mention} recibió **{format_seconds(ROB_PROTECTION_SECONDS)} de protección gratis**."
             )
             if penalty["debt"]:
                 embed.description += f"\n⚖️ **{money(penalty['debt'])}** de la multa pasó a Deuda Judicial."
             await interaction.response.send_message(embed=embed)
 
-    @lude.command(name="slots", description="Apuesta en Slots. El 5% alimenta el Jackpot Global.")
+    @lude.command(name="slots", description="Apuesta en Slots. Una parte alimenta el Jackpot Global.")
     async def slots(self, interaction: discord.Interaction, apuesta: int):
         uid = interaction.user.id
         if apuesta < CASINO_MIN_BET:
@@ -2044,8 +2436,14 @@ class LudeEconomy(commands.Cog):
             await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
             return
 
-        symbols = ["🍒", "🍋", "🔔", "💎", "7️⃣"]
-        weights = [40, 28, 18, 10, 4]
+        symbols = list(SLOTS_SYMBOL_WEIGHTS.keys())
+        weights = [SLOTS_SYMBOL_WEIGHTS[symbol] for symbol in symbols]
+        if sum(weights) <= 0:
+            await interaction.response.send_message("Slots está temporalmente deshabilitado por configuración administrativa.", ephemeral=True)
+            # Reembolsa porque la apuesta ya se debitó.
+            with self.db_lock:
+                conn = self.connect(); conn.execute("UPDATE economy_users SET wallet = wallet + ? WHERE user_id = ?", (apuesta, uid)); conn.commit(); conn.close()
+            return
         reels = random.choices(symbols, weights=weights, k=3)
 
         with self.db_lock:
@@ -2064,15 +2462,15 @@ class LudeEconomy(commands.Cog):
             with self.db_lock:
                 conn = self.connect(); conn.execute("UPDATE casino_state SET value = ? WHERE key = 'slots_jackpot'", (SLOTS_JACKPOT_BASE,)); conn.commit(); conn.close()
         elif reels[0] == reels[1] == reels[2] == "💎":
-            total_return = apuesta * 5; result_name = "💎 ×5"
+            total_return = int(round(apuesta * SLOTS_PAYOUTS["diamond_triple"])); result_name = f"💎 ×{SLOTS_PAYOUTS["diamond_triple"]:g}"
         elif reels[0] == reels[1] == reels[2] == "🔔":
-            total_return = apuesta * 3; result_name = "🔔 ×3"
+            total_return = int(round(apuesta * SLOTS_PAYOUTS["bell_triple"])); result_name = f"🔔 ×{SLOTS_PAYOUTS["bell_triple"]:g}"
         elif reels[0] == reels[1] == reels[2] == "🍋":
-            total_return = apuesta * 2; result_name = "🍋 ×2"
+            total_return = int(round(apuesta * SLOTS_PAYOUTS["lemon_triple"])); result_name = f"🍋 ×{SLOTS_PAYOUTS["lemon_triple"]:g}"
         elif reels[0] == reels[1] == reels[2] == "🍒":
-            total_return = int(round(apuesta * 1.5)); result_name = "🍒 ×1.5"
+            total_return = int(round(apuesta * SLOTS_PAYOUTS["cherry_triple"])); result_name = f"🍒 ×{SLOTS_PAYOUTS["cherry_triple"]:g}"
         elif reels.count("🍒") >= 2:
-            total_return = int(round(apuesta * 0.5)); result_name = "🍒🍒 ×0.5"
+            total_return = int(round(apuesta * SLOTS_PAYOUTS["cherry_pair"])); result_name = f"🍒🍒 ×{SLOTS_PAYOUTS["cherry_pair"]:g}"
 
         credited, withheld = (0, 0)
         if total_return:
@@ -2125,8 +2523,8 @@ class LudeEconomy(commands.Cog):
         number = random.randint(0, 36)
         result_color = "green" if number == 0 else ("red" if number in red_numbers else "black")
         won = color.value == result_color
-        multiplier = 36 if color.value == "green" else 2
-        total_return = apuesta * multiplier if won else 0
+        multiplier = ROULETTE_GREEN_RETURN if color.value == "green" else ROULETTE_EVEN_RETURN
+        total_return = int(round(apuesta * multiplier)) if won else 0
         credited, withheld = self.credit_casino_return(uid, apuesta, total_return) if won else (0, 0)
         names = {"red": "🔴 Rojo", "black": "⚫ Negro", "green": "🟢 Verde"}
         embed = discord.Embed(title="🎡 Ruleta", color=COLOR_GOLD)
@@ -2163,17 +2561,20 @@ class LudeEconomy(commands.Cog):
             f"{interaction.user.mention} desafía a {usuario.mention}.\n"
             f"Apuesta por jugador: **{money(apuesta)}**\n"
             f"{interaction.user.mention} eligió **{eleccion.name}**.\n"
-            f"Comisión del casino: **5% del pozo**."
+            f"Comisión del casino: **{COINFLIP_FEE_RATE * 100:g}% del pozo**."
         )
         embed.set_footer(text="El desafío expira en 60 segundos. El dinero se descuenta solo al aceptar.")
         await interaction.response.send_message(content=usuario.mention, embed=embed, view=view)
         view.message = await interaction.original_response()
 
-    @lude.command(name="crypto", description="Muestra el mercado actual de criptomonedas.")
-    async def crypto(self, interaction: discord.Interaction):
+    # ========================================================
+    # /lude crypto ...
+    # ========================================================
+
+    @crypto_group.command(name="mercado", description="Muestra el mercado actual de criptomonedas.")
+    async def crypto_mercado(self, interaction: discord.Interaction):
         rows = self.crypto_snapshot()
         embed = discord.Embed(title="📈 Mercado Cripto de Interlude", color=COLOR)
-        now = int(time.time())
         with self.db_lock:
             conn = self.connect()
             for row in rows:
@@ -2184,16 +2585,24 @@ class LudeEconomy(commands.Cog):
                 pct = 0.0
                 if previous and previous["price"]:
                     pct = (row["price"] / previous["price"] - 1) * 100
+                cfg = CRYPTO_CONFIG[row["symbol"]]
+                deviation = (float(row["price"]) / float(cfg["initial"]) - 1) * 100
                 embed.add_field(
                     name=f"{row['name']} ({row['symbol']})",
-                    value=f"**{money(float(row['price']))}**\nÚltimo cambio: **{pct:+.2f}%**",
+                    value=(
+                        f"**{money(float(row['price']))}**\n"
+                        f"Último cambio: **{pct:+.2f}%**\n"
+                        f"Vs. fundamental: **{deviation:+.1f}%**"
+                    ),
                     inline=True,
                 )
             conn.close()
-        embed.set_footer(text="Los precios se actualizan cada 15 minutos · movimiento híbrido sistema + jugadores")
+        embed.set_footer(
+            text=f"Actualización cada {format_seconds(CRYPTO_UPDATE_SECONDS)} · híbrido + momentum + reversión probabilística"
+        )
         await interaction.response.send_message(embed=embed)
 
-    @lude.command(name="crypto-comprar", description="Compra criptomonedas desde tu Cuenta Principal.")
+    @crypto_group.command(name="comprar", description="Compra criptomonedas desde tu Cuenta Principal.")
     @app_commands.choices(moneda=[
         app_commands.Choice(name="InterCoin (IC)", value="IC"),
         app_commands.Choice(name="Nova (NVA)", value="NVA"),
@@ -2203,7 +2612,7 @@ class LudeEconomy(commands.Cog):
         ok, text = self.crypto_buy(interaction.user.id, moneda.value, monto)
         await interaction.response.send_message(text, ephemeral=not ok)
 
-    @lude.command(name="crypto-vender", description="Vende un porcentaje de una criptomoneda y cobra al banco.")
+    @crypto_group.command(name="vender", description="Vende un porcentaje de una criptomoneda y cobra al banco.")
     @app_commands.choices(moneda=[
         app_commands.Choice(name="InterCoin (IC)", value="IC"),
         app_commands.Choice(name="Nova (NVA)", value="NVA"),
@@ -2213,7 +2622,7 @@ class LudeEconomy(commands.Cog):
         ok, text = self.crypto_sell(interaction.user.id, moneda.value, porcentaje)
         await interaction.response.send_message(text, ephemeral=not ok)
 
-    @lude.command(name="crypto-cartera", description="Muestra tus criptomonedas y su valor actual.")
+    @crypto_group.command(name="cartera", description="Muestra tus criptomonedas y su valor actual.")
     async def crypto_cartera(self, interaction: discord.Interaction):
         uid = interaction.user.id
         self.ensure_user(uid)
@@ -2249,6 +2658,134 @@ class LudeEconomy(commands.Cog):
                 )
             embed.description = f"Valor total: **{money(total_value)}** · Resultado acumulado: **{money(total_value - total_cost)}**"
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ========================================================
+    # /lude admin ...
+    # ========================================================
+
+    @admin_group.command(name="listar", description="Lista los ajustes modificables de la economía.")
+    async def admin_listar(self, interaction: discord.Interaction, categoria: Optional[str] = None, pagina: int = 1):
+        if not await self.require_admin(interaction):
+            return
+        category = categoria.lower().strip() if categoria else None
+        if category and category not in SETTING_CATEGORIES:
+            await interaction.response.send_message(
+                f"Categoría inválida. Usa: **{', '.join(SETTING_CATEGORIES)}**.", ephemeral=True
+            )
+            return
+        items = [s for s in SETTING_SPECS.values() if category is None or s.category == category]
+        items.sort(key=lambda spec: spec.key)
+        per_page = 15
+        pages = max(1, math.ceil(len(items) / per_page))
+        page = max(1, min(int(pagina), pages))
+        selected = items[(page - 1) * per_page: page * per_page]
+        lines = []
+        for spec in selected:
+            current = setting_display_value(spec)
+            marker = "" if current == spec.default else " ✏️"
+            lines.append(f"`{spec.key}` = **{format_setting_value(current)}**{marker}")
+        embed = discord.Embed(
+            title="⚙️ Lude Admin · Configuración",
+            description="\n".join(lines) if lines else "No hay ajustes en esta categoría.",
+            color=COLOR,
+        )
+        embed.set_footer(text=f"Página {page}/{pages} · {len(items)} ajustes · ✏️ = modificado")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @admin_listar.autocomplete("categoria")
+    async def admin_categoria_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not self.member_is_admin(interaction):
+            return []
+        current = current.lower()
+        return [app_commands.Choice(name=c, value=c) for c in SETTING_CATEGORIES if current in c][:25]
+
+    @admin_group.command(name="ver", description="Muestra un ajuste, su valor actual y el predeterminado.")
+    async def admin_ver(self, interaction: discord.Interaction, clave: str):
+        if not await self.require_admin(interaction):
+            return
+        spec = SETTING_SPECS.get(clave)
+        if not spec:
+            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            return
+        current = setting_display_value(spec)
+        embed = discord.Embed(title="⚙️ Ajuste de Lude", color=COLOR)
+        embed.add_field(name="Clave", value=f"`{spec.key}`", inline=False)
+        embed.add_field(name="Descripción", value=spec.label, inline=False)
+        embed.add_field(name="Actual", value=f"**{format_setting_value(current)}**", inline=True)
+        embed.add_field(name="Predeterminado", value=f"**{format_setting_value(spec.default)}**", inline=True)
+        embed.add_field(name="Categoría", value=spec.category, inline=True)
+        restrictions = []
+        if spec.minimum is not None:
+            restrictions.append(f"mín {spec.minimum}")
+        if spec.maximum is not None:
+            restrictions.append(f"máx {spec.maximum}")
+        if spec.choices:
+            restrictions.append(" / ".join(spec.choices))
+        if restrictions:
+            embed.add_field(name="Límites", value=" · ".join(restrictions), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @admin_group.command(name="cambiar", description="Cambia un ajuste sin editar ni reiniciar el Cog.")
+    async def admin_cambiar(self, interaction: discord.Interaction, clave: str, valor: str):
+        if not await self.require_admin(interaction):
+            return
+        spec = SETTING_SPECS.get(clave)
+        if not spec:
+            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            return
+        old = setting_display_value(spec)
+        try:
+            new = self.update_runtime_setting(clave, valor, interaction.user.id)
+        except (ValueError, KeyError) as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ `{clave}`: **{format_setting_value(old)} → {format_setting_value(new)}**\n"
+            "El cambio ya está activo y queda guardado en SQLite.",
+            ephemeral=True,
+        )
+
+    @admin_group.command(name="restaurar", description="Restaura un ajuste a su valor predeterminado.")
+    async def admin_restaurar(self, interaction: discord.Interaction, clave: str):
+        if not await self.require_admin(interaction):
+            return
+        spec = SETTING_SPECS.get(clave)
+        if not spec:
+            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            return
+        old = setting_display_value(spec)
+        try:
+            default = self.reset_runtime_setting(clave)
+        except (ValueError, KeyError) as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"♻️ `{clave}`: **{format_setting_value(old)} → {format_setting_value(default)}** (predeterminado).",
+            ephemeral=True,
+        )
+
+    def _admin_key_choices(self, interaction: discord.Interaction, current: str):
+        if not self.member_is_admin(interaction):
+            return []
+        current = current.lower().strip()
+        matches = [
+            spec for spec in SETTING_SPECS.values()
+            if current in spec.key.lower() or current in spec.label.lower()
+        ]
+        matches.sort(key=lambda spec: (not spec.key.lower().startswith(current), spec.key))
+        return [app_commands.Choice(name=spec.key[:100], value=spec.key) for spec in matches[:25]]
+
+    @admin_ver.autocomplete("clave")
+    async def admin_ver_key_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._admin_key_choices(interaction, current)
+
+    @admin_cambiar.autocomplete("clave")
+    async def admin_cambiar_key_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._admin_key_choices(interaction, current)
+
+    @admin_restaurar.autocomplete("clave")
+    async def admin_restaurar_key_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._admin_key_choices(interaction, current)
 
 
 async def setup(bot: commands.Bot):

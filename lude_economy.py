@@ -1274,16 +1274,16 @@ class LudeEconomy(commands.Cog):
             conn.close()
         return spec.default
 
-    @staticmethod
-    def member_is_admin(interaction: discord.Interaction) -> bool:
-        return isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator
+    def member_is_admin(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == 1006704642618568735
 
     async def require_admin(self, interaction: discord.Interaction) -> bool:
         if self.member_is_admin(interaction):
             return True
+
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                "⛔ Este comando requiere el permiso **Administrador**.",
+                "⛔ Solo el dueño del bot puede utilizar este comando.",
                 ephemeral=True,
             )
         return False

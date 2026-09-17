@@ -36,7 +36,7 @@ jobs:
           tree = ast.parse(source)
           defs = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'market_engine_step']
           assert len(defs) == 1
-          ns = dict(math=math, random=random, CRYPTO_DYNAMIC_RATE=.002, CRYPTO_STABLE_BOOST=2.5, CRYPTO_FUNDAMENTAL_MAX_STEP=.008, CRYPTO_REGIME_SWITCH=.035, CRYPTO_GLOBAL_INFLUENCE=.12)
+          ns = dict(math=math, random=random, MARKET_REGIMES=('bull','bear','sideways','storm'), CRYPTO_DYNAMIC_RATE=.002, CRYPTO_STABLE_BOOST=2.5, CRYPTO_FUNDAMENTAL_MAX_STEP=.008, CRYPTO_REGIME_SWITCH=.035, CRYPTO_GLOBAL_INFLUENCE=.12)
           exec(compile(ast.Module(body=defs, type_ignores=[]), '<engine>', 'exec'), ns)
           for name, seed, low, high, player, reversal, momentum, cap, liquidity in [('IC',1000,.01,.04,.02,.38,.30,.06,15000),('NVA',250,.03,.09,.04,.22,.40,.08,7500),('FLX',50,.07,.18,.06,.08,.55,.10,3000)]:
               cfg = dict(symbol=name,auto_min=low,auto_max=high,player_max=player,reversion_strength=reversal,momentum_strength=momentum,momentum_cap=cap,liquidity=liquidity)

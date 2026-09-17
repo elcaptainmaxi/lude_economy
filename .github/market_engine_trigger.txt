@@ -1,0 +1,1 @@
+Instalar parche de motor cripto 2.0; verificar sintaxis, escenarios de 1200 ticks y permisos de dueño único.

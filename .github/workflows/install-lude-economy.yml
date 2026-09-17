@@ -17,7 +17,13 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, hashlib, lzma, py_compile
-          payload = Path('.github/lude-update-payload.txt').read_text(encoding='ascii')
+          parts = [
+              '.github/lude-update-part-1.txt',
+              '.github/lude-update-part-2.txt',
+              '.github/lude-update-part-3.txt',
+              '.github/lude-update-payload.txt',
+          ]
+          payload = ''.join(Path(p).read_text(encoding='ascii').strip() for p in parts)
           source = lzma.decompress(base64.b64decode(payload))
           digest = hashlib.sha256(source).hexdigest()
           expected = '4188a4d067921db0312c531096765f686f1b19486d200589bfd66ac6a36903f6'
@@ -33,6 +39,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add lude_economy.py
-          git rm .github/lude-update-payload.txt .github/workflows/install-lude-economy.yml
+          git rm .github/lude-update-part-1.txt .github/lude-update-part-2.txt .github/lude-update-part-3.txt .github/lude-update-payload.txt .github/workflows/install-lude-economy.yml
           git commit -m 'Actualizar economía: mercado de 5 minutos y panel admin'
           git push

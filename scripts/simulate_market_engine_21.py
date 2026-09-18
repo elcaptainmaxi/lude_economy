@@ -153,7 +153,7 @@ def engine_step(symbol, price, state, history, buy=0.0, sell=0.0, rng=None):
     momentum_move = clamp(momentum * cfg["momentum_strength"] * (.7 if regime == "sideways" else 1),
                           -cfg["momentum_cap"], cfg["momentum_cap"])
     total = clamp(auto_move + momentum_move + player_move, -.85, 1.5)
-    new_price = max(.01, round(price * (1 + total), 4))
+    # Apply movement in log-price space. Symmetric +/- shocks no longer create\n    # an accidental long-run downward bias through multiplicative volatility drag.\n    new_price = max(.01, round(price * math.exp(total), 4))
 
     return new_price, replace(state, fundamental=fundamental, anchor=anchor,
                               anchor_ticks=anchor_ticks, regime=regime,

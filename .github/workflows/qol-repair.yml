@@ -1,8 +1,7 @@
 name: Diagnosticar QoL
 on:
   push:
-    paths:
-      - '.github/workflows/qol-repair.yml'
+    paths: ['.github/workflows/qol-repair.yml']
 permissions:
   contents: write
 jobs:
@@ -12,18 +11,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Localizar segmento incompleto del parche anterior
+      - name: Localizar exactamente el segmento incompleto
         run: |
           python - <<'PY'
           import hashlib, subprocess
           s=subprocess.check_output(['git','show','956856de5a6c96d2e75a5d48a8cd4bf22f7e74ac:.github/qol_upgrade_payload.txt'], text=True).strip()
-          expected=['30e1c2dd155c5610','c3264d837c72304d','2a17cdb94ab49b58','17ad6d21f3ac964f','4f9f1e6499ceb1ca','541840c2a71a5550','2d3a9b1bc5f4a11f','f791c2e601da290b','2cd84f836f2a9a8b','d7ade815699a4e0f']
-          print('Payload characters:',len(s))
-          for i,expected_hash in enumerate(expected,1):
-              actual=hashlib.sha256(s[:i*1000].encode()).hexdigest()[:16]
-              print('PREFIX',i*1000, 'MATCH' if actual==expected_hash else 'MISMATCH')
-              if actual!=expected_hash:
-                  print('CORRUPTED_BLOCK_START', (i-1)*1000)
-                  print('CORRUPTED_BLOCK_TEXT', s[(i-1)*1000:i*1000+100])
-                  break
+          expected=['74f9a18242caf385','aa7cf3fa94899119','2412b5f6d8ef97ae','1a2b78bc861a956d','a85e1ff3424a7c8a','288aff6d1cf7025f','b7e9e568db53029f','388f84158215a80d','fbb4cb6818db2f3c','2cd84f836f2a9a8b']
+          for i,hash_expected in enumerate(expected,1):
+              n=8000+i*100
+              good=hashlib.sha256(s[:n].encode()).hexdigest()[:16]==hash_expected
+              print('PREFIX',n,'MATCH' if good else 'MISMATCH')
+              if not good:
+                  print('SUSPECT_SEGMENT',s[n-130:n+60]);break
           PY

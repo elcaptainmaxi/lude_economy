@@ -671,10 +671,10 @@ class WorkView(discord.ui.View):
     def _make_callback(self, index: int):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("Este turno de trabajo no es tuyo.", ephemeral=True)
+                await interaction.response.send_message("Este turno de trabajo no es tuyo.", ephemeral=False)
                 return
             if self.finished:
-                await interaction.response.send_message("Este turno ya terminó.", ephemeral=True)
+                await interaction.response.send_message("Este turno ya terminó.", ephemeral=False)
                 return
 
             self.finished = True
@@ -719,15 +719,15 @@ class ProtectionOfferView(discord.ui.View):
     @discord.ui.button(label="Comprar protección", style=discord.ButtonStyle.primary, emoji="🛡️")
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.victim_id:
-            await interaction.response.send_message("Solo la víctima puede comprar esta protección.", ephemeral=True)
+            await interaction.response.send_message("Solo la víctima puede comprar esta protección.", ephemeral=False)
             return
         if self.done:
-            await interaction.response.send_message("Esta oferta ya fue utilizada.", ephemeral=True)
+            await interaction.response.send_message("Esta oferta ya fue utilizada.", ephemeral=False)
             return
 
         ok, text = self.cog.buy_rob_protection(self.victim_id)
         if not ok:
-            await interaction.response.send_message(text, ephemeral=True)
+            await interaction.response.send_message(text, ephemeral=False)
             return
 
         self.done = True
@@ -801,7 +801,7 @@ class BlackjackView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Esta partida no es tuya.", ephemeral=True)
+            await interaction.response.send_message("Esta partida no es tuya.", ephemeral=False)
             return False
         return True
 
@@ -828,10 +828,10 @@ class BlackjackView(discord.ui.View):
         if self.finished:
             return
         if len(self.player) != 2:
-            await interaction.response.send_message("Solo puedes doblar con tus dos cartas iniciales.", ephemeral=True)
+            await interaction.response.send_message("Solo puedes doblar con tus dos cartas iniciales.", ephemeral=False)
             return
         if not self.cog.try_debit_wallet(self.user_id, self.bet):
-            await interaction.response.send_message("No tienes suficiente Wallet para doblar.", ephemeral=True)
+            await interaction.response.send_message("No tienes suficiente Wallet para doblar.", ephemeral=False)
             return
         self.bet *= 2
         self.player.append(self.deck.pop())
@@ -913,14 +913,14 @@ class CoinflipView(discord.ui.View):
     @discord.ui.button(label="Aceptar", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.send_message("Solo el usuario desafiado puede aceptar.", ephemeral=True)
+            await interaction.response.send_message("Solo el usuario desafiado puede aceptar.", ephemeral=False)
             return
         if self.done:
             return
 
         result = self.cog.resolve_coinflip(self.creator_id, self.opponent_id, self.bet, self.creator_choice)
         if not result["ok"]:
-            await interaction.response.send_message(result["message"], ephemeral=True)
+            await interaction.response.send_message(result["message"], ephemeral=False)
             return
 
         self.done = True
@@ -942,7 +942,7 @@ class CoinflipView(discord.ui.View):
     @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.send_message("Solo el usuario desafiado puede rechazar.", ephemeral=True)
+            await interaction.response.send_message("Solo el usuario desafiado puede rechazar.", ephemeral=False)
             return
         self.done = True
         for child in self.children:
@@ -961,6 +961,274 @@ class CoinflipView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
+
+
+
+
+# ============================================================
+# QoL 1.0 · navegación y confirmaciones de administración
+# ============================================================
+
+class LudeNavigator(discord.ui.View):
+    def __init__(self, cog: "LudeEconomy", owner_id: int, page: str = "panel"):
+        super().__init__(timeout=600)
+        self.cog, self.owner_id, self.page = cog, owner_id, page
+        self.message = None
+        self._mark_page()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ Solo quien abrió este panel puede usar sus botones.", ephemeral=False)
+            return False
+        return True
+
+    def _mark_page(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id:
+                item.style = discord.ButtonStyle.primary if item.custom_id == f"lude:qol:{self.page}" else discord.ButtonStyle.secondary
+
+    async def _show(self, interaction: discord.Interaction, page: str):
+        self.page = page
+        self._mark_page()
+        await interaction.response.edit_message(embed=self.cog.build_qol_embed(page, self.owner_id), view=self)
+
+    @discord.ui.button(label="Panel", emoji="🏙️", custom_id="lude:qol:panel", row=0)
+    async def panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, "panel")
+
+    @discord.ui.button(label="Banco", emoji="🏦", custom_id="lude:qol:banco", row=0)
+    async def banco(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, "banco")
+
+    @discord.ui.button(label="Mercado", emoji="📈", custom_id="lude:qol:mercado", row=0)
+    async def mercado(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, "mercado")
+
+    @discord.ui.button(label="Cartera", emoji="💼", custom_id="lude:qol:cartera", row=0)
+    async def cartera(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, "cartera")
+
+    @discord.ui.button(label="Actualizar", emoji="🔄", style=discord.ButtonStyle.success, row=1)
+    async def actualizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._show(interaction, self.page)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+class LudeAdminConfirmation(discord.ui.View):
+    def __init__(self, cog: "LudeEconomy", user_id: int, key: str, proposed, restore: bool = False):
+        super().__init__(timeout=120)
+        self.cog, self.user_id, self.key = cog, user_id, key
+        self.restore, self.proposed = restore, proposed
+        self.expected = setting_display_value(SETTING_SPECS[key])
+        self.finished = False
+        self.message = None
+
+    def render(self):
+        spec = SETTING_SPECS[self.key]
+        target = spec.default if self.restore else self.proposed
+        embed = discord.Embed(title="⚙️ Confirmar restauración" if self.restore else "⚙️ Confirmar cambio", color=COLOR_GOLD)
+        embed.description = (f"**{spec.label}**\n`{self.key}`\n\n"
+                             f"Actual: **{format_setting_value(self.expected)}**\n"
+                             f"Nuevo: **{format_setting_value(target)}**\n\n"
+                             "El cambio se aplicará solamente cuando presiones Confirmar.")
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id or interaction.user.id != ADMIN_OWNER_ID:
+            await interaction.response.send_message("⛔ Solo el dueño puede confirmar este cambio.", ephemeral=False)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.finished:
+            await interaction.response.send_message("Este cambio ya fue procesado.", ephemeral=True)
+            return
+        if setting_display_value(SETTING_SPECS[self.key]) != self.expected:
+            self.finished = True
+            for child in self.children: child.disabled = True
+            await interaction.response.edit_message(content="⚠️ El ajuste cambió desde que abriste esta confirmación. Volvé a intentarlo.", embed=None, view=self)
+            return
+        try:
+            if self.restore:
+                value = self.cog.reset_runtime_setting(self.key, interaction.user.id)
+            else:
+                value = self.cog.update_runtime_setting(self.key, self.proposed, interaction.user.id)
+        except (ValueError, KeyError, sqlite3.Error) as exc:
+            await interaction.response.send_message(f"❌ No se aplicó el cambio: {exc}", ephemeral=False)
+            return
+        self.finished = True
+        for child in self.children: child.disabled = True
+        symbol = "♻️" if self.restore else "✅"
+        await interaction.response.edit_message(
+            content=f"{symbol} `{self.key}`: **{format_setting_value(self.expected)} → {format_setting_value(value)}** · registrado en el historial.",
+            embed=None, view=self,
+        )
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.finished = True
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(content="🚫 Cambio cancelado. No se modificó la configuración.", embed=None, view=self)
+
+    async def on_timeout(self):
+        if self.finished: return
+        self.finished = True
+        for child in self.children: child.disabled = True
+        if self.message:
+            try: await self.message.edit(view=self)
+            except discord.HTTPException: pass
+
+
+class LudeAdminModal(discord.ui.Modal, title="Editar ajuste de Lude"):
+    def __init__(self, cog: "LudeEconomy", user_id: int, key: str):
+        super().__init__(timeout=300)
+        self.cog, self.user_id, self.key = cog, user_id, key
+        self.value = discord.ui.TextInput(
+            label="Nuevo valor", default=str(setting_display_value(SETTING_SPECS[key])),
+            placeholder="Introducí el valor deseado", max_length=100,
+        )
+        self.add_item(self.value)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id or interaction.user.id != ADMIN_OWNER_ID:
+            await interaction.response.send_message("⛔ Sin autorización.", ephemeral=False)
+            return
+        try:
+            value = parse_setting_value(SETTING_SPECS[self.key], str(self.value.value))
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=False)
+            return
+        view = LudeAdminConfirmation(self.cog, self.user_id, self.key, value)
+        await interaction.response.send_message(embed=view.render(), view=view)
+        view.message = await interaction.original_response()
+
+
+class LudeAdminPanel(discord.ui.View):
+    PER_PAGE = 20  # Discord limita a 25 las opciones por menú.
+
+    def __init__(self, cog: "LudeEconomy", user_id: int):
+        super().__init__(timeout=600)
+        self.cog, self.user_id = cog, user_id
+        self.category, self.page, self.key = SETTING_CATEGORIES[0], 0, None
+        self.message = None
+        self.rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id or interaction.user.id != ADMIN_OWNER_ID:
+            await interaction.response.send_message("⛔ Solo el dueño puede utilizar este panel.", ephemeral=False)
+            return False
+        return True
+
+    def items(self):
+        return sorted((s for s in SETTING_SPECS.values() if s.category == self.category), key=lambda s: s.key)
+
+    def rebuild(self):
+        self.clear_items()
+        items = self.items()
+        pages = max(1, math.ceil(len(items) / self.PER_PAGE))
+        self.page = min(self.page, pages - 1)
+        visible = items[self.page * self.PER_PAGE:(self.page + 1) * self.PER_PAGE]
+        if self.key not in {item.key for item in visible}:
+            self.key = visible[0].key if visible else None
+        category = discord.ui.Select(
+            placeholder="Categoría", row=0,
+            options=[discord.SelectOption(label=cat.title(), value=cat, default=cat == self.category) for cat in SETTING_CATEGORIES],
+        )
+        category.callback = self.select_category
+        self.add_item(category)
+        if visible:
+            select = discord.ui.Select(
+                placeholder="Seleccioná el ajuste", row=1,
+                options=[discord.SelectOption(label=item.key[:100], value=item.key,
+                                              default=item.key == self.key) for item in visible],
+            )
+            select.callback = self.select_setting
+            self.add_item(select)
+        for label, style, row, callback, disabled in (
+            ("◀ Anterior", discord.ButtonStyle.secondary, 2, self.previous, self.page == 0),
+            ("Siguiente ▶", discord.ButtonStyle.secondary, 2, self.next_page, self.page >= pages - 1),
+            ("✏️ Editar", discord.ButtonStyle.primary, 3, self.edit_setting, not self.key),
+            ("♻️ Restaurar", discord.ButtonStyle.secondary, 3, self.restore_setting, not self.key),
+            ("📋 Historial", discord.ButtonStyle.secondary, 4, self.history, False),
+            ("🔄 Actualizar", discord.ButtonStyle.secondary, 4, self.refresh, False),
+        ):
+            button = discord.ui.Button(label=label, style=style, row=row, disabled=disabled)
+            button.callback = callback
+            self.add_item(button)
+
+    def render(self):
+        items = self.items()
+        pages = max(1, math.ceil(len(items) / self.PER_PAGE))
+        embed = discord.Embed(title="⚙️ Lude Admin · Panel interactivo", color=COLOR)
+        embed.description = (f"Categoría: **{self.category.title()}** · Página **{self.page + 1}/{pages}**\n"
+                             "Elegí una clave y usá Editar o Restaurar. Todos los cambios requieren confirmación.")
+        if self.key:
+            spec = SETTING_SPECS[self.key]
+            limits = []
+            if spec.minimum is not None: limits.append(f"mín. {spec.minimum}")
+            if spec.maximum is not None: limits.append(f"máx. {spec.maximum}")
+            if spec.choices: limits.append(" / ".join(spec.choices))
+            embed.add_field(name=spec.label[:256],
+                            value=(f"Clave: `{spec.key}`\nActual: **{format_setting_value(setting_display_value(spec))}**\n"
+                                   f"Predeterminado: **{format_setting_value(spec.default)}**\n"
+                                   f"Restricciones: {' · '.join(limits) if limits else '—'}"), inline=False)
+        embed.set_footer(text=f"{len(items)} ajustes · Solo el dueño puede interactuar")
+        return embed
+
+    async def select_category(self, interaction: discord.Interaction):
+        self.category = interaction.data["values"][0]
+        self.page, self.key = 0, None
+        self.rebuild()
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    async def select_setting(self, interaction: discord.Interaction):
+        self.key = interaction.data["values"][0]
+        self.rebuild()
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    async def previous(self, interaction: discord.Interaction):
+        self.page -= 1; self.key = None; self.rebuild()
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        self.page += 1; self.key = None; self.rebuild()
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    async def refresh(self, interaction: discord.Interaction):
+        self.rebuild()
+        await interaction.response.edit_message(embed=self.render(), view=self)
+
+    async def edit_setting(self, interaction: discord.Interaction):
+        if not self.key:
+            await interaction.response.send_message("Elegí una clave.", ephemeral=False)
+            return
+        await interaction.response.send_modal(LudeAdminModal(self.cog, self.user_id, self.key))
+
+    async def restore_setting(self, interaction: discord.Interaction):
+        if not self.key:
+            await interaction.response.send_message("Elegí una clave.", ephemeral=False)
+            return
+        view = LudeAdminConfirmation(self.cog, self.user_id, self.key, SETTING_SPECS[self.key].default, restore=True)
+        await interaction.response.send_message(embed=view.render(), view=view)
+        view.message = await interaction.original_response()
+
+    async def history(self, interaction: discord.Interaction):
+        await interaction.response.send_message(embed=self.cog.build_admin_history_embed())
+
+    async def on_timeout(self):
+        for child in self.children: child.disabled = True
+        if self.message:
+            try: await self.message.edit(view=self)
+            except discord.HTTPException: pass
 
 
 # ============================================================
@@ -1165,6 +1433,18 @@ class LudeEconomy(commands.Cog):
                     updated_at INTEGER NOT NULL
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS economy_admin_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    setting_key TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    previous_value TEXT NOT NULL,
+                    new_value TEXT NOT NULL,
+                    changed_by INTEGER NOT NULL,
+                    changed_at INTEGER NOT NULL
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_economy_admin_audit_recent ON economy_admin_audit(id DESC)")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS casino_state (
@@ -1336,7 +1616,7 @@ class LudeEconomy(commands.Cog):
             except Exception as exc:
                 print(f"[LudeEconomy] Ajuste inválido ignorado {row['key']}: {exc}")
 
-    def update_runtime_setting(self, key: str, value, updated_by: int):
+    def update_runtime_setting(self, key: str, value, updated_by: int, restore: bool = False):
         spec = SETTING_SPECS.get(key)
         if not spec:
             raise KeyError("Ajuste inexistente")
@@ -1379,39 +1659,47 @@ class LudeEconomy(commands.Cog):
 
         with self.db_lock:
             conn = self.connect()
-            conn.execute(
-                """
-                INSERT INTO economy_settings(key, value, updated_by, updated_at)
-                VALUES(?, ?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_by = excluded.updated_by,
-                    updated_at = excluded.updated_at
-                """,
-                (key, json.dumps(parsed, ensure_ascii=False), updated_by, int(time.time())),
-            )
-            if key.startswith("crypto.") and key.endswith(".fundamental"):
-                symbol = key.split(".")[1]
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if restore:
+                    conn.execute("DELETE FROM economy_settings WHERE key = ?", (key,))
+                else:
+                    conn.execute(
+                        """INSERT INTO economy_settings(key, value, updated_by, updated_at)
+                           VALUES(?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET
+                           value = excluded.value, updated_by = excluded.updated_by,
+                           updated_at = excluded.updated_at""",
+                        (key, json.dumps(parsed, ensure_ascii=False), updated_by, int(time.time())),
+                    )
                 conn.execute(
-                    "UPDATE crypto_engine_state SET fundamental = ?, stable_ticks = 0 WHERE symbol = ?",
-                    (float(parsed), symbol),
+                    """INSERT INTO economy_admin_audit
+                       (setting_key, action, previous_value, new_value, changed_by, changed_at)
+                       VALUES(?, ?, ?, ?, ?, ?)""",
+                    (key, "restaurar" if restore else "cambiar",
+                     json.dumps(previous_value, ensure_ascii=False),
+                     json.dumps(parsed, ensure_ascii=False), updated_by, int(time.time())),
                 )
-            conn.commit()
-            conn.close()
+                if key.startswith("crypto.") and key.endswith(".fundamental"):
+                    symbol = key.split(".")[1]
+                    conn.execute(
+                        "UPDATE crypto_engine_state SET fundamental = ?, stable_ticks = 0 WHERE symbol = ?",
+                        (float(parsed), symbol),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                apply_setting_value(spec, previous_value)
+                raise
+            finally:
+                conn.close()
         return parsed
 
-    def reset_runtime_setting(self, key: str):
+    def reset_runtime_setting(self, key: str, updated_by: int):
         spec = SETTING_SPECS.get(key)
         if not spec:
             raise KeyError("Ajuste inexistente")
-        # Usar la misma validación cruzada de /admin cambiar antes de restaurar.
-        self.update_runtime_setting(key, spec.default, 0)
-        with self.db_lock:
-            conn = self.connect()
-            conn.execute("DELETE FROM economy_settings WHERE key = ?", (key,))
-            conn.commit()
-            conn.close()
-        return spec.default
+        # Reutiliza las validaciones; borrado del override y auditoría son atómicos.
+        return self.update_runtime_setting(key, spec.default, updated_by, restore=True)
 
     def member_is_admin(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == ADMIN_OWNER_ID
@@ -1426,6 +1714,185 @@ class LudeEconomy(commands.Cog):
                 ephemeral=True,
             )
         return False
+
+
+    # --------------------------------------------------------
+    # QoL 1.0 · embeds públicos / navegación de consulta
+    # --------------------------------------------------------
+
+    def build_qol_embed(self, page: str, user_id: int) -> discord.Embed:
+        if page == "mercado":
+            return self.build_market_embed()
+        if page == "cartera":
+            return self.build_portfolio_embed(user_id)
+        if page == "banco":
+            return self.build_bank_embed(user_id)
+        return self.build_overview_embed(user_id)
+
+    async def show_qol(self, interaction: discord.Interaction, page: str):
+        view = LudeNavigator(self, interaction.user.id, page)
+        await interaction.response.send_message(embed=self.build_qol_embed(page, interaction.user.id), view=view)
+        view.message = await interaction.original_response()
+
+    def build_bank_embed(self, user_id: int) -> discord.Embed:
+        primary = self.get_bank(user_id, "primary")
+        extra = self.get_bank(user_id, "additional")
+        embed = discord.Embed(title="🏦 Bank of Interlude", color=COLOR)
+        embed.add_field(name=f"Cuenta Principal · Nivel {primary['level']}",
+                        value=f"**{money(primary['balance'])} / {money(self.bank_capacity(primary))}**", inline=False)
+        if extra:
+            embed.add_field(name=f"Cuenta Adicional · Nivel {extra['level']}",
+                            value=f"**{money(extra['balance'])} / {money(self.bank_capacity(extra))}**", inline=False)
+        else:
+            embed.add_field(name="Cuenta Adicional", value="No abierta. Requiere Principal Nivel 7.", inline=False)
+        embed.set_footer(text="Panel público · solo quien lo abrió puede usar los botones")
+        return embed
+
+    def _portfolio_rows(self, user_id: int):
+        self.ensure_user(user_id)
+        with self.db_lock:
+            conn = self.connect()
+            try:
+                return conn.execute(
+                    """SELECT h.symbol, h.quantity, h.cost_basis, m.name, m.price
+                       FROM crypto_holdings h JOIN crypto_market m ON m.symbol = h.symbol
+                       WHERE h.user_id = ? AND h.quantity > 0 ORDER BY h.symbol""",
+                    (user_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _signed_money(amount: float) -> str:
+        return ("+" if amount > 0 else "") + money(amount)
+
+    def build_portfolio_embed(self, user_id: int) -> discord.Embed:
+        holdings = self._portfolio_rows(user_id)
+        embed = discord.Embed(title="💼 Cartera Cripto", color=COLOR)
+        total_value, total_cost, total_fees, total_net = 0.0, 0.0, 0, 0
+        for row in holdings:
+            qty, cost, price = float(row["quantity"]), float(row["cost_basis"]), float(row["price"])
+            value = qty * price
+            unrealized = value - cost  # No incluye beneficios de ventas ya realizadas.
+            percent = unrealized / cost * 100 if cost > 0 else 0.0
+            fee = max(1, int(round(value * CRYPTO_FEE_RATE)))
+            net_est = max(0, int(round(value)) - fee)
+            total_value += value; total_cost += cost; total_fees += fee; total_net += net_est
+            embed.add_field(
+                name=f"{row['name']} ({row['symbol']})",
+                value=(f"Unidades: **{qty:.8f}**\n"
+                       f"Precio actual: **{money(price)}**\n"
+                       f"Precio promedio: **{money(cost / qty)}**\n"
+                       f"Costo de adquisición: **{money(cost)}**\n"
+                       f"Valor actual: **{money(value)}**\n"
+                       f"Ganancia no realizada: **{self._signed_money(unrealized)} ({percent:+.2f}%)**\n"
+                       f"Comisión de venta estimada: **{money(fee)}**\n"
+                       f"Cobrarías aprox.: **{money(net_est)}**"),
+                inline=True,
+            )
+        if holdings:
+            aggregate = (total_value - total_cost) / total_cost * 100 if total_cost > 0 else 0.0
+            embed.description = (f"Valor total: **{money(total_value)}** · Ganancia no realizada: "
+                                 f"**{self._signed_money(total_value-total_cost)} ({aggregate:+.2f}%)**\n"
+                                 f"Comisiones de venta estimadas: **{money(total_fees)}** · "
+                                 f"Cobrarías aprox.: **{money(total_net)}**")
+        else:
+            embed.description = "Todavía no tenés criptomonedas."
+        embed.set_footer(text="El costo promedio excluye la comisión de compra; estimaciones sujetas a precio, capacidad bancaria y retenciones judiciales.")
+        return embed
+
+    def build_market_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="📈 Mercado Cripto de Interlude", color=COLOR)
+        now = int(time.time())
+        with self.db_lock:
+            conn = self.connect()
+            try:
+                market = conn.execute("SELECT * FROM crypto_market ORDER BY symbol").fetchall()
+                for row in market:
+                    history = conn.execute(
+                        "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY id DESC LIMIT 6",
+                        (row["symbol"],),
+                    ).fetchall()
+                    prices = [float(p["price"]) for p in reversed(history)]
+                    moves = []
+                    for before, after in zip(prices[:-1], prices[1:]):
+                        moves.append(f"<:crypto_up:{CRYPTO_UP_EMOJI_ID}>" if after > before else
+                                     f"<:crypto_down:{CRYPTO_DOWN_EMOJI_ID}>" if after < before else "➖")
+                    pct = (prices[-1] / prices[-2] - 1) * 100 if len(prices) >= 2 and prices[-2] > 0 else 0.0
+                    trend_change = (prices[-1] / prices[0] - 1) * 100 if len(prices) >= 2 and prices[0] > 0 else 0.0
+                    trend = "↗️ Alza" if trend_change >= 1 else "↘️ Baja" if trend_change <= -1 else "↔️ Estable"
+                    state = conn.execute("SELECT fundamental, regime FROM crypto_engine_state WHERE symbol = ?", (row["symbol"],)).fetchone()
+                    fundamental = float(state["fundamental"]) if state else float(CRYPTO_CONFIG[row["symbol"]]["initial"])
+                    deviation = (float(row["price"]) / max(.01, fundamental) - 1) * 100
+                    next_update = int(row["updated_at"]) + int(CRYPTO_UPDATE_SECONDS)
+                    next_text = f"<t:{next_update}:R>" if next_update > now else "Pendiente de actualización"
+                    embed.add_field(
+                        name=f"{row['name']} ({row['symbol']})",
+                        value=(f"**{money(float(row['price']))}**\n"
+                               f"Último cambio: **{pct:+.2f}%**\n"
+                               f"Vs. fundamental: **{deviation:+.1f}%**\n"
+                               f"Régimen: **{MARKET_REGIME_LABELS.get(state['regime'], '↔️ Consolidación') if state else '↔️ Consolidación'}**\n"
+                               f"Tendencia reciente: **{trend} ({trend_change:+.2f}%)**\n"
+                               f"Últimos 5: {' '.join(moves[-5:]) if moves else 'Sin historial'}\n"
+                               f"Próximo tick: **{next_text}**"),
+                        inline=True,
+                    )
+            finally:
+                conn.close()
+        embed.set_footer(text=f"Actualización cada {format_seconds(CRYPTO_UPDATE_SECONDS)} · movimientos de antiguo a reciente · datos al consultar")
+        return embed
+
+    def build_overview_embed(self, user_id: int) -> discord.Embed:
+        user = self.get_user(user_id)
+        primary = self.get_bank(user_id, "primary")
+        extra = self.get_bank(user_id, "additional")
+        investments = sum(float(row["quantity"]) * float(row["price"]) for row in self._portfolio_rows(user_id))
+        job = JOBS.get(user["current_job"], JOBS["changas"])
+        level, progress, needed = work_level_progress(user["work_xp"])
+        now = int(time.time())
+        embed = discord.Embed(title="🏙️ Interlude · Mi economía", color=COLOR)
+        embed.add_field(name="💵 Wallet", value=money(user["wallet"]), inline=True)
+        embed.add_field(name="🏦 Banco principal", value=money(primary["balance"]), inline=True)
+        embed.add_field(name="📈 Inversiones", value=money(investments), inline=True)
+        embed.add_field(name="⚖️ Deuda judicial", value=money(user["judicial_debt"]), inline=True)
+        embed.add_field(name="💼 Profesión", value=job["name"], inline=True)
+        embed.add_field(name="⭐ Work Level", value=f"{level} · {progress}/{needed or 'MAX'} XP", inline=True)
+        if extra:
+            embed.add_field(name="🏦 Banco adicional", value=money(extra["balance"]), inline=True)
+        if user["arrested"]:
+            embed.add_field(name="🚔 Estado", value=f"Arrestado · Fianza {money(user['bail_due'])}", inline=True)
+        cooldowns = []
+        for label, column, interval in (("Trabajar", "last_work_at", WORK_COOLDOWN),
+                                        ("Crimen", "last_crime_at", CRIME_COOLDOWN),
+                                        ("Robar", "last_rob_at", ROB_COOLDOWN)):
+            ready_at = int(user[column]) + int(interval)
+            cooldowns.append(f"**{label}:** <t:{ready_at}:R>" if ready_at > now else f"**{label}:** ✅ Disponible")
+        embed.add_field(name="⏱️ Actividades", value="\n".join(cooldowns), inline=False)
+        embed.set_footer(text="Panel público · solo quien lo abrió puede usar los botones")
+        return embed
+
+    def build_admin_history_embed(self) -> discord.Embed:
+        with self.db_lock:
+            conn = self.connect()
+            try:
+                rows = conn.execute(
+                    """SELECT setting_key, action, previous_value, new_value, changed_by, changed_at
+                       FROM economy_admin_audit ORDER BY id DESC LIMIT 10"""
+                ).fetchall()
+            finally:
+                conn.close()
+        embed = discord.Embed(title="📋 Lude Admin · Últimos cambios", color=COLOR)
+        if not rows:
+            embed.description = "Todavía no hay cambios registrados. Los cambios anteriores a esta actualización no se reconstruyen."
+        else:
+            lines = []
+            for row in rows:
+                before = format_setting_value(json.loads(row["previous_value"]))
+                after = format_setting_value(json.loads(row["new_value"]))
+                lines.append(f"**{'♻️' if row['action'] == 'restaurar' else '✏️'} `{row['setting_key']}`**: "
+                             f"{before} → {after} · <@{row['changed_by']}> · <t:{row['changed_at']}:R>")
+            embed.description = "\n".join(lines)[:4000]
+        return embed
 
     # --------------------------------------------------------
     # ECONOMÍA / DEUDA
@@ -2034,6 +2501,10 @@ class LudeEconomy(commands.Cog):
     # COMMANDS /lude
     # ========================================================
 
+    @lude.command(name="panel", description="Tu economía, inversiones y cooldowns en un solo panel.")
+    async def panel(self, interaction: discord.Interaction):
+        await self.show_qol(interaction, "panel")
+
     @lude.command(name="estado", description="Muestra tu estado económico general.")
     async def estado(self, interaction: discord.Interaction):
         user = self.get_user(interaction.user.id)
@@ -2073,13 +2544,13 @@ class LudeEconomy(commands.Cog):
     async def empleo(self, interaction: discord.Interaction, trabajo: str):
         trabajo = trabajo.lower()
         if trabajo not in JOBS:
-            await interaction.response.send_message("Trabajo inválido.", ephemeral=True)
+            await interaction.response.send_message("Trabajo inválido.", ephemeral=False)
             return
         user = self.get_user(interaction.user.id)
         level = work_level_from_xp(user["work_xp"])
         job = JOBS[trabajo]
         if level < job["level"]:
-            await interaction.response.send_message(f"Necesitas Work Level **{job['level']}**.", ephemeral=True)
+            await interaction.response.send_message(f"Necesitas Work Level **{job['level']}**.", ephemeral=False)
             return
         with self.db_lock:
             conn = self.connect()
@@ -2114,15 +2585,15 @@ class LudeEconomy(commands.Cog):
         uid = interaction.user.id
         user = self.get_user(uid)
         if user["arrested"]:
-            await interaction.response.send_message("🚔 Estás arrestado. Debes pagar tu fianza antes de trabajar.", ephemeral=True)
+            await interaction.response.send_message("🚔 Estás arrestado. Debes pagar tu fianza antes de trabajar.", ephemeral=False)
             return
         if uid in self.active_work_users:
-            await interaction.response.send_message("Ya tienes un turno de trabajo activo.", ephemeral=True)
+            await interaction.response.send_message("Ya tienes un turno de trabajo activo.", ephemeral=False)
             return
         now = int(time.time())
         remaining = WORK_COOLDOWN - (now - user["last_work_at"])
         if remaining > 0:
-            await interaction.response.send_message(f"⏳ Puedes volver a trabajar en **{format_seconds(remaining)}**.", ephemeral=True)
+            await interaction.response.send_message(f"⏳ Puedes volver a trabajar en **{format_seconds(remaining)}**.", ephemeral=False)
             return
 
         job_id = user["current_job"]
@@ -2132,7 +2603,7 @@ class LudeEconomy(commands.Cog):
             if self.bank_free(uid, "primary", include_reservation=False) < max_salary:
                 await interaction.response.send_message(
                     f"🏦 Este empleo paga por Bank of Interlude. Necesitas al menos **{money(max_salary)}** de capacidad libre en tu Cuenta Principal antes de iniciar el turno.",
-                    ephemeral=True,
+                    ephemeral=False,
                 )
                 return
             self.bank_reservations[uid] = max_salary
@@ -2152,42 +2623,25 @@ class LudeEconomy(commands.Cog):
 
     @lude.command(name="banco", description="Muestra tus cuentas de Bank of Interlude.")
     async def banco(self, interaction: discord.Interaction):
-        uid = interaction.user.id
-        primary = self.get_bank(uid, "primary")
-        additional = self.get_bank(uid, "additional")
-        embed = discord.Embed(title="🏦 Bank of Interlude", color=COLOR)
-        embed.add_field(
-            name=f"Cuenta Principal · Nivel {primary['level']}",
-            value=f"**{money(primary['balance'])} / {money(self.bank_capacity(primary))}**",
-            inline=False,
-        )
-        if additional:
-            embed.add_field(
-                name=f"Cuenta Adicional · Nivel {additional['level']}",
-                value=f"**{money(additional['balance'])} / {money(self.bank_capacity(additional))}**",
-                inline=False,
-            )
-        else:
-            embed.add_field(name="Cuenta Adicional", value="No abierta. Requiere Principal Nivel 7.", inline=False)
-        await interaction.response.send_message(embed=embed)
+        await self.show_qol(interaction, "banco")
 
     @lude.command(name="depositar", description="Deposita Wallet en tu Cuenta Principal.")
     async def depositar(self, interaction: discord.Interaction, cantidad: int):
         ok, text = self.deposit(interaction.user.id, cantidad)
-        await interaction.response.send_message(text, ephemeral=not ok)
+        await interaction.response.send_message(text, ephemeral=False)
 
     @lude.command(name="retirar", description="Retira dinero de tu Cuenta Principal a Wallet.")
     async def retirar(self, interaction: discord.Interaction, cantidad: int):
         ok, text = self.withdraw(interaction.user.id, cantidad)
-        await interaction.response.send_message(text, ephemeral=not ok)
+        await interaction.response.send_message(text, ephemeral=False)
 
     @lude.command(name="transferir", description="Transfiere desde tu Cuenta Principal a otro usuario.")
     async def transferir(self, interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
         if usuario.bot or usuario.id == interaction.user.id:
-            await interaction.response.send_message("El destinatario debe ser otro usuario real.", ephemeral=True)
+            await interaction.response.send_message("El destinatario debe ser otro usuario real.", ephemeral=False)
             return
         ok, text = self.transfer(interaction.user.id, usuario.id, cantidad)
-        await interaction.response.send_message(text, ephemeral=not ok)
+        await interaction.response.send_message(text, ephemeral=False)
 
     @lude.command(name="mejorar-banco", description="Mejora una cuenta de Bank of Interlude.")
     @app_commands.choices(cuenta=[
@@ -2199,11 +2653,11 @@ class LudeEconomy(commands.Cog):
         account_type = cuenta.value
         account = self.get_bank(uid, account_type)
         if not account:
-            await interaction.response.send_message("No tienes esa cuenta bancaria.", ephemeral=True)
+            await interaction.response.send_message("No tienes esa cuenta bancaria.", ephemeral=False)
             return
         level = int(account["level"])
         if level >= 7:
-            await interaction.response.send_message("Esa cuenta ya está en Nivel 7.", ephemeral=True)
+            await interaction.response.send_message("Esa cuenta ya está en Nivel 7.", ephemeral=False)
             return
         next_level = level + 1
         if account_type == "primary":
@@ -2214,7 +2668,7 @@ class LudeEconomy(commands.Cog):
         # El upgrade se paga desde Wallet para no mezclar capacidad con el costo.
         user = self.get_user(uid)
         if user["wallet"] < cost:
-            await interaction.response.send_message(f"Necesitas **{money(cost)}** en Wallet.", ephemeral=True)
+            await interaction.response.send_message(f"Necesitas **{money(cost)}** en Wallet.", ephemeral=False)
             return
         with self.db_lock:
             conn = self.connect(); cur = conn.cursor(); cur.execute("BEGIN IMMEDIATE")
@@ -2230,14 +2684,14 @@ class LudeEconomy(commands.Cog):
         uid = interaction.user.id
         primary = self.get_bank(uid, "primary")
         if int(primary["level"]) < 7:
-            await interaction.response.send_message("Tu Cuenta Principal debe estar en **Nivel 7**.", ephemeral=True)
+            await interaction.response.send_message("Tu Cuenta Principal debe estar en **Nivel 7**.", ephemeral=False)
             return
         if self.get_bank(uid, "additional"):
-            await interaction.response.send_message("Ya tienes una Cuenta Adicional.", ephemeral=True)
+            await interaction.response.send_message("Ya tienes una Cuenta Adicional.", ephemeral=False)
             return
         user = self.get_user(uid)
         if user["wallet"] < ADDITIONAL_OPEN_COST:
-            await interaction.response.send_message(f"Necesitas **{money(ADDITIONAL_OPEN_COST)}** en Wallet.", ephemeral=True)
+            await interaction.response.send_message(f"Necesitas **{money(ADDITIONAL_OPEN_COST)}** en Wallet.", ephemeral=False)
             return
         with self.db_lock:
             conn = self.connect(); cur = conn.cursor(); cur.execute("BEGIN IMMEDIATE")
@@ -2258,10 +2712,10 @@ class LudeEconomy(commands.Cog):
     async def mover_banco(self, interaction: discord.Interaction, destino: app_commands.Choice[str], cantidad: int):
         uid = interaction.user.id
         if cantidad <= 0:
-            await interaction.response.send_message("La cantidad debe ser mayor que 0.", ephemeral=True)
+            await interaction.response.send_message("La cantidad debe ser mayor que 0.", ephemeral=False)
             return
         if not self.get_bank(uid, "additional"):
-            await interaction.response.send_message("No tienes Cuenta Adicional.", ephemeral=True)
+            await interaction.response.send_message("No tienes Cuenta Adicional.", ephemeral=False)
             return
         src, dst = ("primary", "additional") if destino.value == "p2a" else ("additional", "primary")
         with self.db_lock:
@@ -2272,11 +2726,11 @@ class LudeEconomy(commands.Cog):
             free = BANK_LEVELS[dst_row["level"]]["capacity"] - dst_row["balance"] - dst_reserved
             if src_row["balance"] < cantidad:
                 conn.rollback(); conn.close()
-                await interaction.response.send_message("Saldo insuficiente en la cuenta de origen.", ephemeral=True)
+                await interaction.response.send_message("Saldo insuficiente en la cuenta de origen.", ephemeral=False)
                 return
             if free < cantidad:
                 conn.rollback(); conn.close()
-                await interaction.response.send_message("La cuenta de destino no tiene capacidad suficiente.", ephemeral=True)
+                await interaction.response.send_message("La cuenta de destino no tiene capacidad suficiente.", ephemeral=False)
                 return
             src_new = src_row["balance"] - cantidad
             dst_new = dst_row["balance"] + cantidad
@@ -2299,7 +2753,7 @@ class LudeEconomy(commands.Cog):
             ).fetchall()
             conn.close()
         if not rows:
-            await interaction.response.send_message("Todavía no tienes movimientos bancarios.", ephemeral=True)
+            await interaction.response.send_message("Todavía no tienes movimientos bancarios.", ephemeral=False)
             return
         labels = {
             "deposit": "Depósito", "withdraw": "Retiro", "transfer_sent": "Transferencia enviada",
@@ -2315,7 +2769,7 @@ class LudeEconomy(commands.Cog):
             when = f"<t:{row['created_at']}:R>"
             lines.append(f"**{labels.get(row['action'], row['action'])}** · {money(row['amount'])} · saldo {money(row['balance_after'])} · {when}")
         embed = discord.Embed(title=f"📜 Bank of Interlude · Últimos {int(BANK_HISTORY_KEEP)}", description="\n".join(lines), color=COLOR)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @lude.command(name="deuda", description="Consulta tu Deuda Judicial.")
     async def deuda(self, interaction: discord.Interaction):
@@ -2324,7 +2778,7 @@ class LudeEconomy(commands.Cog):
         embed.description = f"Deuda actual: **{money(user['judicial_debt'])}**."
         if user["judicial_debt"]:
             embed.add_field(name="Retención", value=f"{JUDICIAL_RATE * 100:g}% de ingresos legítimos y recargo en compras hasta cancelar la deuda.", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @lude.command(name="pagar-deuda", description="Paga voluntariamente parte o toda tu Deuda Judicial.")
     @app_commands.choices(origen=[
@@ -2336,10 +2790,10 @@ class LudeEconomy(commands.Cog):
         user = self.get_user(uid)
         debt = int(user["judicial_debt"])
         if debt <= 0:
-            await interaction.response.send_message("No tienes Deuda Judicial.", ephemeral=True)
+            await interaction.response.send_message("No tienes Deuda Judicial.", ephemeral=False)
             return
         if cantidad <= 0:
-            await interaction.response.send_message("La cantidad debe ser mayor que 0.", ephemeral=True)
+            await interaction.response.send_message("La cantidad debe ser mayor que 0.", ephemeral=False)
             return
         pay = min(cantidad, debt)
         with self.db_lock:
@@ -2348,14 +2802,14 @@ class LudeEconomy(commands.Cog):
                 wallet = cur.execute("SELECT wallet FROM economy_users WHERE user_id = ?", (uid,)).fetchone()["wallet"]
                 if wallet < pay:
                     conn.rollback(); conn.close()
-                    await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
+                    await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=False)
                     return
                 cur.execute("UPDATE economy_users SET wallet = wallet - ?, judicial_debt = judicial_debt - ? WHERE user_id = ?", (pay, pay, uid))
             else:
                 bank = cur.execute("SELECT balance FROM bank_accounts WHERE user_id = ? AND account_type = 'primary'", (uid,)).fetchone()
                 if bank["balance"] < pay:
                     conn.rollback(); conn.close()
-                    await interaction.response.send_message("No tienes suficiente saldo en la Cuenta Principal.", ephemeral=True)
+                    await interaction.response.send_message("No tienes suficiente saldo en la Cuenta Principal.", ephemeral=False)
                     return
                 new_balance = bank["balance"] - pay
                 cur.execute("UPDATE bank_accounts SET balance = ? WHERE user_id = ? AND account_type = 'primary'", (new_balance, uid))
@@ -2375,7 +2829,7 @@ class LudeEconomy(commands.Cog):
         uid = interaction.user.id
         user = self.get_user(uid)
         if not user["arrested"]:
-            await interaction.response.send_message("No estás arrestado.", ephemeral=True)
+            await interaction.response.send_message("No estás arrestado.", ephemeral=False)
             return
         bail = int(user["bail_due"])
         with self.db_lock:
@@ -2386,13 +2840,13 @@ class LudeEconomy(commands.Cog):
             if metodo.value == "wallet":
                 if u["wallet"] < bail:
                     conn.rollback(); conn.close()
-                    await interaction.response.send_message("Tu Wallet no alcanza. Usa el método Automático para permitir financiación.", ephemeral=True)
+                    await interaction.response.send_message("Tu Wallet no alcanza. Usa el método Automático para permitir financiación.", ephemeral=False)
                     return
                 from_wallet = bail
             elif metodo.value == "bank":
                 if b["balance"] < bail:
                     conn.rollback(); conn.close()
-                    await interaction.response.send_message("Tu Cuenta Principal no alcanza. Usa el método Automático para permitir financiación.", ephemeral=True)
+                    await interaction.response.send_message("Tu Cuenta Principal no alcanza. Usa el método Automático para permitir financiación.", ephemeral=False)
                     return
                 from_bank = bail
             else:
@@ -2421,12 +2875,12 @@ class LudeEconomy(commands.Cog):
         uid = interaction.user.id
         user = self.get_user(uid)
         if user["arrested"]:
-            await interaction.response.send_message("🚔 Estás arrestado. Debes pagar tu fianza antes de cometer otro crimen.", ephemeral=True)
+            await interaction.response.send_message("🚔 Estás arrestado. Debes pagar tu fianza antes de cometer otro crimen.", ephemeral=False)
             return
         now = int(time.time())
         remaining = CRIME_COOLDOWN - (now - user["last_crime_at"])
         if remaining > 0:
-            await interaction.response.send_message(f"⏳ Puedes volver a usar `/lude crime` en **{format_seconds(remaining)}**.", ephemeral=True)
+            await interaction.response.send_message(f"⏳ Puedes volver a usar `/lude crime` en **{format_seconds(remaining)}**.", ephemeral=False)
             return
 
         keys = list(CRIME_CATEGORIES)
@@ -2470,17 +2924,17 @@ class LudeEconomy(commands.Cog):
         thief_id = interaction.user.id
         victim_id = usuario.id
         if usuario.bot or victim_id == thief_id:
-            await interaction.response.send_message("Debes elegir a otro usuario real.", ephemeral=True)
+            await interaction.response.send_message("Debes elegir a otro usuario real.", ephemeral=False)
             return
         thief = self.get_user(thief_id)
         victim = self.get_user(victim_id)
         if thief["arrested"]:
-            await interaction.response.send_message("🚔 Estás arrestado. No puedes robar hasta pagar tu fianza.", ephemeral=True)
+            await interaction.response.send_message("🚔 Estás arrestado. No puedes robar hasta pagar tu fianza.", ephemeral=False)
             return
         now = int(time.time())
         remaining = ROB_COOLDOWN - (now - thief["last_rob_at"])
         if remaining > 0:
-            await interaction.response.send_message(f"⏳ Puedes volver a robar en **{format_seconds(remaining)}**.", ephemeral=True)
+            await interaction.response.send_message(f"⏳ Puedes volver a robar en **{format_seconds(remaining)}**.", ephemeral=False)
             return
 
         # La protección se verifica antes del mínimo: intentar robar a una persona protegida es una trampa.
@@ -2499,7 +2953,7 @@ class LudeEconomy(commands.Cog):
         if victim["wallet"] < min_wallet:
             await interaction.response.send_message(
                 f"💸 {usuario.mention} no puede ser robado ahora. Debe llevar al menos **{money(min_wallet)}** en Wallet.\nTu cooldown **no fue consumido**.",
-                ephemeral=True,
+                ephemeral=False,
             )
             return
 
@@ -2523,7 +2977,7 @@ class LudeEconomy(commands.Cog):
                 actual = min(attempted, int(current_victim))
                 if actual <= 0:
                     conn.rollback(); conn.close()
-                    await interaction.response.send_message("El Wallet de la víctima cambió antes de resolver el robo.", ephemeral=True)
+                    await interaction.response.send_message("El Wallet de la víctima cambió antes de resolver el robo.", ephemeral=False)
                     return
                 cur.execute("UPDATE economy_users SET wallet = wallet - ? WHERE user_id = ?", (actual, victim_id))
                 cur.execute("UPDATE economy_users SET wallet = wallet + ? WHERE user_id = ?", (actual, thief_id))
@@ -2549,16 +3003,16 @@ class LudeEconomy(commands.Cog):
     async def slots(self, interaction: discord.Interaction, apuesta: int):
         uid = interaction.user.id
         if apuesta < CASINO_MIN_BET:
-            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=True)
+            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=False)
             return
         if not self.try_debit_wallet(uid, apuesta):
-            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
+            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=False)
             return
 
         symbols = list(SLOTS_SYMBOL_WEIGHTS.keys())
         weights = [SLOTS_SYMBOL_WEIGHTS[symbol] for symbol in symbols]
         if sum(weights) <= 0:
-            await interaction.response.send_message("Slots está temporalmente deshabilitado por configuración administrativa.", ephemeral=True)
+            await interaction.response.send_message("Slots está temporalmente deshabilitado por configuración administrativa.", ephemeral=False)
             # Reembolsa porque la apuesta ya se debitó.
             with self.db_lock:
                 conn = self.connect(); conn.execute("UPDATE economy_users SET wallet = wallet + ? WHERE user_id = ?", (apuesta, uid)); conn.commit(); conn.close()
@@ -2610,10 +3064,10 @@ class LudeEconomy(commands.Cog):
     async def blackjack(self, interaction: discord.Interaction, apuesta: int):
         uid = interaction.user.id
         if apuesta < CASINO_MIN_BET:
-            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=True)
+            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=False)
             return
         if not self.try_debit_wallet(uid, apuesta):
-            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
+            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=False)
             return
         view = BlackjackView(self, uid, apuesta)
         if view.is_natural(view.player) or view.is_natural(view.dealer):
@@ -2633,10 +3087,10 @@ class LudeEconomy(commands.Cog):
     async def ruleta(self, interaction: discord.Interaction, apuesta: int, color: app_commands.Choice[str]):
         uid = interaction.user.id
         if apuesta < CASINO_MIN_BET:
-            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=True)
+            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=False)
             return
         if not self.try_debit_wallet(uid, apuesta):
-            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
+            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=False)
             return
         red_numbers = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
         number = random.randint(0, 36)
@@ -2661,18 +3115,18 @@ class LudeEconomy(commands.Cog):
     ])
     async def coinflip(self, interaction: discord.Interaction, usuario: discord.Member, apuesta: int, eleccion: app_commands.Choice[str]):
         if usuario.bot or usuario.id == interaction.user.id:
-            await interaction.response.send_message("Debes desafiar a otro usuario real.", ephemeral=True)
+            await interaction.response.send_message("Debes desafiar a otro usuario real.", ephemeral=False)
             return
         if apuesta < CASINO_MIN_BET:
-            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=True)
+            await interaction.response.send_message(f"La apuesta mínima es **{money(CASINO_MIN_BET)}**.", ephemeral=False)
             return
         creator = self.get_user(interaction.user.id)
         opponent = self.get_user(usuario.id)
         if creator["wallet"] < apuesta:
-            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=True)
+            await interaction.response.send_message("No tienes suficiente Wallet.", ephemeral=False)
             return
         if opponent["wallet"] < apuesta:
-            await interaction.response.send_message(f"{usuario.mention} no tiene suficiente Wallet para aceptar esa apuesta.", ephemeral=True)
+            await interaction.response.send_message(f"{usuario.mention} no tiene suficiente Wallet para aceptar esa apuesta.", ephemeral=False)
             return
         view = CoinflipView(self, interaction.user.id, usuario.id, apuesta, eleccion.value)
         embed = discord.Embed(title="🪙 Desafío Coinflip PvP", color=COLOR_GOLD)
@@ -2690,46 +3144,9 @@ class LudeEconomy(commands.Cog):
     # /lude crypto ...
     # ========================================================
 
-    @crypto_group.command(name="mercado", description="Muestra el mercado y las últimas cinco variaciones.")
+    @crypto_group.command(name="mercado", description="Mercado, tendencias y últimos cinco movimientos.")
     async def crypto_mercado(self, interaction: discord.Interaction):
-        rows = self.crypto_snapshot()
-        embed = discord.Embed(title="📈 Mercado Cripto de Interlude", color=COLOR)
-        with self.db_lock:
-            conn = self.connect()
-            try:
-                for row in rows:
-                    samples = conn.execute(
-                        "SELECT price FROM crypto_history WHERE symbol = ? ORDER BY id DESC LIMIT 6",
-                        (row["symbol"],),
-                    ).fetchall()
-                    prices = [float(sample["price"]) for sample in reversed(samples)]
-                    movements = []
-                    for previous, current in zip(prices[:-1], prices[1:]):
-                        if current > previous:
-                            movements.append(f"<:crypto_up:{CRYPTO_UP_EMOJI_ID}>")
-                        elif current < previous:
-                            movements.append(f"<:crypto_down:{CRYPTO_DOWN_EMOJI_ID}>")
-                        else:
-                            movements.append("➖")
-                    pct = (prices[-1] / prices[-2] - 1) * 100 if len(prices) >= 2 and prices[-2] > 0 else 0.0
-                    state = conn.execute("SELECT fundamental, regime FROM crypto_engine_state WHERE symbol = ?", (row["symbol"],)).fetchone()
-                    fundamental = float(state["fundamental"]) if state else float(CRYPTO_CONFIG[row["symbol"]]["initial"])
-                    deviation = (float(row["price"]) / max(0.01, fundamental) - 1) * 100
-                    embed.add_field(
-                        name=f"{row['name']} ({row['symbol']})",
-                        value=(
-                            f"**{money(float(row['price']))}**\n"
-                            f"Último cambio: **{pct:+.2f}%**\n"
-                            f"Vs. fundamental: **{deviation:+.1f}%**\n"
-                            f"Estado: **{MARKET_REGIME_LABELS.get(state['regime'], '↔️ Consolidación') if state else '↔️ Consolidación'}**\n"
-                            f"Últimos 5: {' '.join(movements[-5:]) if movements else 'Sin historial'}"
-                        ),
-                        inline=True,
-                    )
-            finally:
-                conn.close()
-        embed.set_footer(text=f"Actualización cada {format_seconds(CRYPTO_UPDATE_SECONDS)} · historial de izquierda (antiguo) a derecha (reciente)")
-        await interaction.response.send_message(embed=embed)
+        await self.show_qol(interaction, "mercado")
 
     @crypto_group.command(name="comprar", description="Compra criptomonedas desde tu Cuenta Principal.")
     @app_commands.choices(moneda=[
@@ -2739,7 +3156,7 @@ class LudeEconomy(commands.Cog):
     ])
     async def crypto_comprar(self, interaction: discord.Interaction, moneda: app_commands.Choice[str], monto: int):
         ok, text = self.crypto_buy(interaction.user.id, moneda.value, monto)
-        await interaction.response.send_message(text, ephemeral=not ok)
+        await interaction.response.send_message(text, ephemeral=False)
 
     @crypto_group.command(name="vender", description="Vende un porcentaje de una criptomoneda y cobra al banco.")
     @app_commands.choices(moneda=[
@@ -2749,44 +3166,11 @@ class LudeEconomy(commands.Cog):
     ])
     async def crypto_vender(self, interaction: discord.Interaction, moneda: app_commands.Choice[str], porcentaje: int):
         ok, text = self.crypto_sell(interaction.user.id, moneda.value, porcentaje)
-        await interaction.response.send_message(text, ephemeral=not ok)
+        await interaction.response.send_message(text, ephemeral=False)
 
-    @crypto_group.command(name="cartera", description="Muestra tus criptomonedas y su valor actual.")
+    @crypto_group.command(name="cartera", description="Muestra tu cartera y ganancias no realizadas.")
     async def crypto_cartera(self, interaction: discord.Interaction):
-        uid = interaction.user.id
-        self.ensure_user(uid)
-        with self.db_lock:
-            conn = self.connect()
-            holdings = conn.execute("""
-                SELECT h.symbol, h.quantity, h.cost_basis, m.name, m.price
-                FROM crypto_holdings h
-                JOIN crypto_market m ON m.symbol = h.symbol
-                WHERE h.user_id = ? AND h.quantity > 0
-                ORDER BY h.symbol
-            """, (uid,)).fetchall()
-            conn.close()
-        embed = discord.Embed(title="💼 Cartera Cripto", color=COLOR)
-        if not holdings:
-            embed.description = "No tienes criptomonedas."
-        else:
-            total_value = 0.0
-            total_cost = 0.0
-            for row in holdings:
-                value = float(row["quantity"]) * float(row["price"])
-                total_value += value
-                total_cost += float(row["cost_basis"])
-                pnl = value - float(row["cost_basis"])
-                embed.add_field(
-                    name=f"{row['name']} ({row['symbol']})",
-                    value=(
-                        f"Unidades: **{row['quantity']:.8f}**\n"
-                        f"Valor: **{money(value)}**\n"
-                        f"P/L: **{money(pnl)}**"
-                    ),
-                    inline=True,
-                )
-            embed.description = f"Valor total: **{money(total_value)}** · Resultado acumulado: **{money(total_value - total_cost)}**"
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.show_qol(interaction, "cartera")
 
     # ========================================================
     # /lude admin ...
@@ -2799,7 +3183,7 @@ class LudeEconomy(commands.Cog):
         category = categoria.lower().strip() if categoria else None
         if category and category not in SETTING_CATEGORIES:
             await interaction.response.send_message(
-                f"Categoría inválida. Usa: **{', '.join(SETTING_CATEGORIES)}**.", ephemeral=True
+                f"Categoría inválida. Usa: **{', '.join(SETTING_CATEGORIES)}**.", ephemeral=False
             )
             return
         items = [s for s in SETTING_SPECS.values() if category is None or s.category == category]
@@ -2819,7 +3203,7 @@ class LudeEconomy(commands.Cog):
             color=COLOR,
         )
         embed.set_footer(text=f"Página {page}/{pages} · {len(items)} ajustes · ✏️ = modificado")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @admin_listar.autocomplete("categoria")
     async def admin_categoria_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -2834,7 +3218,7 @@ class LudeEconomy(commands.Cog):
             return
         spec = SETTING_SPECS.get(clave)
         if not spec:
-            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            await interaction.response.send_message("Ajuste inexistente.", ephemeral=False)
             return
         current = setting_display_value(spec)
         embed = discord.Embed(title="⚙️ Ajuste de Lude", color=COLOR)
@@ -2852,46 +3236,50 @@ class LudeEconomy(commands.Cog):
             restrictions.append(" / ".join(spec.choices))
         if restrictions:
             embed.add_field(name="Límites", value=" · ".join(restrictions), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
-    @admin_group.command(name="cambiar", description="Cambia un ajuste sin editar ni reiniciar el Cog.")
+    @admin_group.command(name="cambiar", description="Propone un cambio; requiere confirmación.")
     async def admin_cambiar(self, interaction: discord.Interaction, clave: str, valor: str):
         if not await self.require_admin(interaction):
             return
         spec = SETTING_SPECS.get(clave)
         if not spec:
-            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            await interaction.response.send_message("Ajuste inexistente.")
             return
-        old = setting_display_value(spec)
         try:
-            new = self.update_runtime_setting(clave, valor, interaction.user.id)
-        except (ValueError, KeyError) as exc:
-            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            parsed = parse_setting_value(spec, valor)
+        except ValueError as exc:
+            await interaction.response.send_message(f"❌ {exc}")
             return
-        await interaction.response.send_message(
-            f"✅ `{clave}`: **{format_setting_value(old)} → {format_setting_value(new)}**\n"
-            "El cambio ya está activo y queda guardado en SQLite.",
-            ephemeral=True,
-        )
+        view = LudeAdminConfirmation(self, interaction.user.id, clave, parsed)
+        await interaction.response.send_message(embed=view.render(), view=view)
+        view.message = await interaction.original_response()
 
-    @admin_group.command(name="restaurar", description="Restaura un ajuste a su valor predeterminado.")
+    @admin_group.command(name="restaurar", description="Propone restaurar el valor predeterminado; requiere confirmación.")
     async def admin_restaurar(self, interaction: discord.Interaction, clave: str):
         if not await self.require_admin(interaction):
             return
         spec = SETTING_SPECS.get(clave)
         if not spec:
-            await interaction.response.send_message("Ajuste inexistente.", ephemeral=True)
+            await interaction.response.send_message("Ajuste inexistente.")
             return
-        old = setting_display_value(spec)
-        try:
-            default = self.reset_runtime_setting(clave)
-        except (ValueError, KeyError) as exc:
-            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        view = LudeAdminConfirmation(self, interaction.user.id, clave, spec.default, restore=True)
+        await interaction.response.send_message(embed=view.render(), view=view)
+        view.message = await interaction.original_response()
+
+    @admin_group.command(name="panel", description="Abre el panel administrativo interactivo.")
+    async def admin_panel(self, interaction: discord.Interaction):
+        if not await self.require_admin(interaction):
             return
-        await interaction.response.send_message(
-            f"♻️ `{clave}`: **{format_setting_value(old)} → {format_setting_value(default)}** (predeterminado).",
-            ephemeral=True,
-        )
+        view = LudeAdminPanel(self, interaction.user.id)
+        await interaction.response.send_message(embed=view.render(), view=view)
+        view.message = await interaction.original_response()
+
+    @admin_group.command(name="historial", description="Consulta los últimos diez cambios administrativos.")
+    async def admin_historial(self, interaction: discord.Interaction):
+        if not await self.require_admin(interaction):
+            return
+        await interaction.response.send_message(embed=self.build_admin_history_embed())
 
     def _admin_key_choices(self, interaction: discord.Interaction, current: str):
         if not self.member_is_admin(interaction):

@@ -171,7 +171,7 @@ def transient_crash_test(symbol,crash_hours=2,multiplier=.25):
  cfg=COINS[symbol];state=State(fundamental=cfg['initial'],anchor=cfg['initial'])
  for _ in range(int(crash_hours*3600/TICK_SECONDS)):
   anchor,ticks,fundamental,anchor_reference=update_anchor_and_fundamental(symbol,cfg['initial']*multiplier,state)
-  state=replace(state,anchor=anchor,anchor_ticks=ticks,anchor_reference=reference if False else anchor_reference,fundamental=fundamental)
+  state=replace(state,anchor=anchor,anchor_ticks=ticks,anchor_reference=anchor_reference,fundamental=fundamental)
  return state.fundamental/cfg['initial']-1, state.anchor_ticks,state.anchor
 
 def manipulation_tick_test(symbol,amount,seed=731):

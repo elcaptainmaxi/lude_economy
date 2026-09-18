@@ -1,0 +1,29 @@
+name: Market 2.1 offline integration
+on:
+  push:
+    branches:
+      - feature/market-engine-2.1
+    paths:
+      - 'lude/**'
+      - 'scripts/test_crypto_21_real_cog.py'
+      - '.github/workflows/market-21-offline-integration.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Discord test dependency
+        run: python -m pip install 'discord.py>=2.3,<3'
+      - name: Compile production modules and test
+        run: python -m compileall -q lude scripts/test_crypto_21_real_cog.py
+      - name: Migration tests
+        run: python -m scripts.test_crypto_21_migration
+      - name: Real Cog offline integration
+        run: python -m scripts.test_crypto_21_real_cog

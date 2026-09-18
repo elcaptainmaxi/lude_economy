@@ -1,9 +1,21 @@
-"""SQLite-only tests: no bot, no production DB, no discord imports.
+"""SQLite-only tests: no bot, no production DB, no Discord dependency.
 
 Run from repository root: python -m scripts.test_crypto_21_migration
 """
+import importlib.util
 import sqlite3
-from lude.crypto_21_migration import migrate_crypto_21, NEW_COLUMNS
+from pathlib import Path
+
+# Import the standalone migration by file to avoid executing lude/__init__.py,
+# which imports Discord-specific modules.
+spec = importlib.util.spec_from_file_location(
+    'crypto_21_migration_standalone',
+    Path(__file__).resolve().parents[1] / 'lude' / 'crypto_21_migration.py',
+)
+migration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(migration)
+migrate_crypto_21 = migration.migrate_crypto_21
+NEW_COLUMNS = migration.NEW_COLUMNS
 
 
 def make_db():

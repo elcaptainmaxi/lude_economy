@@ -49,26 +49,19 @@ def signed_divergence(price, fundamental):
 
 
 def extreme_reversion_bias(price, fundamental):
-    """Probability bias, symmetric and nonlinear.
-
-    About 0 below 20% divergence, then progressively rises to a hard
-    +/-0.30 cap for truly extreme dislocations.
-    """
-    ratio = max(.01, price) / max(.01, fundamental)
-    pct = abs(ratio - 1.0)
-    if pct <= .20:
+    """Symmetric nonlinear valuation pressure in probability points."""
+    x = abs(math.log(max(.01, price) / max(.01, fundamental)))
+    a, b, c, d = map(math.log, (1.2, 1.5, 2.0, 4.0))
+    if x <= a:
         strength = 0.0
-    elif pct <= .40:
-        strength = .04 * ((pct - .20) / .20)
-    elif pct <= .65:
-        strength = .04 + .07 * ((pct - .40) / .25)
-    elif pct <= .85:
-        strength = .11 + .08 * ((pct - .65) / .20)
-    elif pct <= .95:
-        strength = .19 + .06 * ((pct - .85) / .10)
+    elif x <= b:
+        strength = .10 * (x - a) / (b - a)
+    elif x <= c:
+        strength = .10 + .14 * (x - b) / (c - b)
+    elif x <= d:
+        strength = .24 + .16 * (x - c) / (d - c)
     else:
-        # For upside bubbles pct can exceed 100%; for crashes it cannot.
-        strength = min(.30, .25 + .05 * min(1.0, (pct - .95) / .55))
+        strength = min(.52, .40 + .12 * min(1.0, (x - d) / math.log(4.0)))
     return -math.copysign(strength, signed_divergence(price, fundamental))
 
 
@@ -82,9 +75,8 @@ def update_anchor_and_fundamental(symbol, price, state):
     anchor_ticks = state.anchor_ticks + 1 if near_candidate else 0
     anchor = candidate if near_candidate or state.anchor_ticks == 0 else state.anchor
 
-    # Structural fundamental barely moves before confirmation.
-    drift = clamp(math.log(max(.01, price) / max(.01, state.fundamental)) * .00035, -.0015, .0015)
-    fundamental = max(.01, state.fundamental * math.exp(drift))
+    # Unconfirmed price action does not rewrite structural value.
+    fundamental = max(.01, state.fundamental)
 
     required = int(cfg["confirm_hours"] * 3600 / TICK_SECONDS)
     if anchor_ticks >= required:

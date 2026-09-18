@@ -8,7 +8,7 @@ from .admin import AdminMixin
 from .bank import BankMixin
 from .casino import CasinoMixin
 from .crime import CrimeMixin
-from .crypto import CryptoMixin
+from .crypto_21_bridge import CryptoMixin21
 from .database import DatabaseMixin
 from .embeds import EmbedsMixin
 from .groups import admin_group, crypto_group, lude
@@ -17,7 +17,7 @@ from .jobs import JobsMixin
 
 class LudeEconomy(
     DatabaseMixin, AdminMixin, EmbedsMixin, JobsMixin, BankMixin,
-    CrimeMixin, CasinoMixin, CryptoMixin, commands.Cog,
+    CrimeMixin, CasinoMixin, CryptoMixin21, commands.Cog,
 ):
     """Cog único que compone los dominios modulares de Lude Economy."""
 

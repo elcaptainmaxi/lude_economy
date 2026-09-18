@@ -8,9 +8,9 @@ from dataclasses import dataclass, replace
 TICK_SECONDS = 300
 REGIMES = ('bull','bear','sideways','storm')
 COINS = {
- 'IC': dict(initial=1000.,auto_min=.003,auto_max=.015,player_max=.02,momentum_strength=.20,momentum_cap=.025,liquidity=15000.,confirm_hours=48,anchor_tolerance=.15,personality=.75),
- 'NVA': dict(initial=250.,auto_min=.010,auto_max=.040,player_max=.04,momentum_strength=.30,momentum_cap=.055,liquidity=7500.,confirm_hours=24,anchor_tolerance=.22,personality=1.),
- 'FLX': dict(initial=50.,auto_min=.018,auto_max=.070,player_max=.06,momentum_strength=.36,momentum_cap=.055,liquidity=3000.,confirm_hours=12,anchor_tolerance=.35,personality=1.35),
+ 'IC': dict(initial=1000.,auto_min=.002,auto_max=.009,player_max=.02,momentum_strength=.12,momentum_cap=.012,liquidity=15000.,confirm_hours=48,anchor_tolerance=.15,personality=.75,regime_strength=.04,reversion_scale=1.35,adapt_rate=.0008,adapt_cap=.0012),
+ 'NVA': dict(initial=250.,auto_min=.007,auto_max=.026,player_max=.04,momentum_strength=.22,momentum_cap=.032,liquidity=7500.,confirm_hours=24,anchor_tolerance=.22,personality=1.,regime_strength=.065,reversion_scale=1.20,adapt_rate=.0015,adapt_cap=.002),
+ 'FLX': dict(initial=50.,auto_min=.016,auto_max=.055,player_max=.06,momentum_strength=.28,momentum_cap=.040,liquidity=3000.,confirm_hours=12,anchor_tolerance=.35,personality=1.35,regime_strength=.09,reversion_scale=1.18,adapt_rate=.0018,adapt_cap=.0025),
 }
 @dataclass
 class State:
@@ -53,7 +53,7 @@ def update_anchor_and_fundamental(symbol,price,state):
  fundamental=max(.01,state.fundamental)
  required=int(cfg['confirm_hours']*3600/TICK_SECONDS)
  if ticks>=required:
-  structural=clamp(math.log(max(.01,anchor)/fundamental)*.0035,-.006,.006)
+  structural=clamp(math.log(max(.01,anchor)/fundamental)*cfg.get('adapt_rate',.0035),-cfg.get('adapt_cap',.006),cfg.get('adapt_cap',.006))
   fundamental=max(.01,fundamental*math.exp(structural))
  return anchor,ticks,fundamental,anchor_reference
 
@@ -76,7 +76,7 @@ def engine_step(symbol,price,state,history,buy=0.,sell=0.,rng=None,shock=0.):
  returns=[math.log(b/a) for a,b in zip(history[:-1],history[1:]) if a>0 and b>0]
  momentum=statistics.fmean(returns[-4:]) if returns else 0.
  anchor,anchor_ticks,fundamental,anchor_reference=update_anchor_and_fundamental(symbol,price,state)
- divergence_bias=extreme_reversion_bias(price,fundamental)
+ divergence_bias=extreme_reversion_bias(price,fundamental)*cfg.get('reversion_scale',1.)
  age=state.regime_ticks+1
  transition=min(.36,.035*cfg['personality']+min(age,100)*.0006)
  if state.regime=='bear' and divergence_bias>.15: transition+=min(.16,(divergence_bias-.15)*.9)
@@ -94,9 +94,9 @@ def engine_step(symbol,price,state,history,buy=0.,sell=0.,rng=None,shock=0.):
   regime=rng.choices(REGIMES,weights=[bull,bear,sideways,storm],k=1)[0]
   if regime!=state.regime: age=0
  player_move,pressure,flow_baseline=order_impact(cfg,state,buy,sell)
- regime_strength={'IC':.07,'NVA':.105,'FLX':.12}[symbol]
+ regime_strength=cfg.get('regime_strength',{'IC':.07,'NVA':.105,'FLX':.12}[symbol])
  regime_bias={'bull':regime_strength,'bear':-regime_strength,'sideways':0.,'storm':0.}[regime]
- momentum_bias=math.tanh(momentum/max(cfg['auto_max'],.0001))*cfg['momentum_strength']*.15
+ momentum_bias=math.tanh(momentum/max(cfg['auto_max'],.0001))*cfg['momentum_strength']*cfg.get('momentum_probability',.15)
  shared_bias=clamp(state.sentiment*.12,-.12,.12)
  up_probability=clamp(.5+regime_bias+divergence_bias+momentum_bias+shared_bias,.06,.94)
  volatility=clamp(state.volatility*.84+abs(momentum)/max(cfg['auto_max'],.0001)*.12+abs(shock)*1.8,0,1)
@@ -171,7 +171,7 @@ def transient_crash_test(symbol,crash_hours=2,multiplier=.25):
  cfg=COINS[symbol];state=State(fundamental=cfg['initial'],anchor=cfg['initial'])
  for _ in range(int(crash_hours*3600/TICK_SECONDS)):
   anchor,ticks,fundamental,anchor_reference=update_anchor_and_fundamental(symbol,cfg['initial']*multiplier,state)
-  state=replace(state,anchor=anchor,anchor_ticks=ticks,anchor_reference=anchor_reference,fundamental=fundamental)
+  state=replace(state,anchor=anchor,anchor_ticks=ticks,anchor_reference=reference if False else anchor_reference,fundamental=fundamental)
  return state.fundamental/cfg['initial']-1, state.anchor_ticks,state.anchor
 
 def manipulation_tick_test(symbol,amount,seed=731):

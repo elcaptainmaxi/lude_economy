@@ -10,7 +10,7 @@ REGIMES = ('bull','bear','sideways','storm')
 COINS = {
  'IC': dict(initial=1000.,auto_min=.003,auto_max=.015,player_max=.02,momentum_strength=.20,momentum_cap=.025,liquidity=15000.,confirm_hours=48,anchor_tolerance=.15,personality=.75),
  'NVA': dict(initial=250.,auto_min=.010,auto_max=.040,player_max=.04,momentum_strength=.30,momentum_cap=.055,liquidity=7500.,confirm_hours=24,anchor_tolerance=.22,personality=1.),
- 'FLX': dict(initial=50.,auto_min=.025,auto_max=.090,player_max=.06,momentum_strength=.45,momentum_cap=.08,liquidity=3000.,confirm_hours=12,anchor_tolerance=.35,personality=1.35),
+ 'FLX': dict(initial=50.,auto_min=.018,auto_max=.070,player_max=.06,momentum_strength=.36,momentum_cap=.055,liquidity=3000.,confirm_hours=12,anchor_tolerance=.35,personality=1.35),
 }
 @dataclass
 class State:
@@ -22,23 +22,28 @@ class State:
  regime_ticks: int = 0
  volatility: float = .35
  pressure: float = 0.
+ flow_baseline: float = 0.
  sentiment: float = 0.
 
 def clamp(v,lo,hi): return max(lo,min(hi,v))
 
-def extreme_reversion_bias(price,fundamental):
+def extreme_reversion_bias(price, fundamental):
  x=abs(math.log(max(.01,price)/max(.01,fundamental)))
- a,b,c,d=map(math.log,(1.2,1.5,2.,4.))
- if x<=a: strength=0.
- elif x<=b: strength=.10*(x-a)/(b-a)
- elif x<=c: strength=.10+.14*(x-b)/(c-b)
- elif x<=d: strength=.24+.16*(x-c)/(d-c)
- else: strength=min(.52,.40+.12*min(1.,(x-d)/math.log(4.)))
+ # Probability-based valuation brake: weak for noise, meaningful before a death spiral.
+ knots=((0.,0.),(math.log(1.10),.025),(math.log(1.20),.065),
+        (math.log(1.50),.16),(math.log(2.),.27),(math.log(4.),.42),
+        (math.log(16.),.52))
+ strength=knots[-1][1]
+ for (x0,y0),(x1,y1) in zip(knots,knots[1:]):
+  if x<=x1:
+   strength=y0+(y1-y0)*(x-x0)/(x1-x0)
+   break
  return -math.copysign(strength,math.log(max(.01,price)/max(.01,fundamental)))
 
 def update_anchor_and_fundamental(symbol,price,state):
  cfg=COINS[symbol]
- # Smooth noisy ticks into a candidate zone. Individual ticks need not be quiet.
+ # Smooth noisy ticks into a candidate zone; test stability of the ZONE,
+ # not every individual price, which would make 12h/24h/48h impossible.
  candidate=math.exp(.98*math.log(max(.01,state.anchor))+.02*math.log(max(.01,price)))
  reference=state.anchor_reference if state.anchor_reference>0 else state.anchor
  near=abs(math.log(max(.01,candidate)/max(.01,reference)))<=math.log1p(cfg['anchor_tolerance'])
@@ -52,7 +57,18 @@ def update_anchor_and_fundamental(symbol,price,state):
   fundamental=max(.01,fundamental*math.exp(structural))
  return anchor,ticks,fundamental,anchor_reference
 
-def engine_step(symbol,price,state,history,buy=0.,sell=0.,rng=None):
+def order_impact(cfg, state, buy=0., sell=0.):
+ """One-tick liquidity response. Persistent identical flow has bounded total effect."""
+ buy,sell=max(0.,buy),max(0.,sell)
+ volume=buy+sell
+ flow=((buy-sell)/volume*math.sqrt(volume)/(math.sqrt(volume)+math.sqrt(cfg['liquidity']))) if volume else 0.
+ innovation=flow-state.flow_baseline
+ baseline=clamp(.85*state.flow_baseline+.15*flow,-1.,1.)
+ pressure=clamp(.55*state.pressure+.7*innovation,-1.,1.)
+ move=clamp(cfg['player_max']*(innovation+.20*pressure),-cfg['player_max'],cfg['player_max'])
+ return move,pressure,baseline
+
+def engine_step(symbol,price,state,history,buy=0.,sell=0.,rng=None,shock=0.):
  rng=rng or random.Random()
  cfg=COINS[symbol]
  price=max(.01,float(price))
@@ -77,27 +93,23 @@ def engine_step(symbol,price,state,history,buy=0.,sell=0.,rng=None):
   storm=.35+.65*state.volatility
   regime=rng.choices(REGIMES,weights=[bull,bear,sideways,storm],k=1)[0]
   if regime!=state.regime: age=0
- volume=max(0.,buy)+max(0.,sell)
- signed=(buy-sell)/volume if volume else 0.
- liquidity=cfg['liquidity']
- flow=signed*math.sqrt(volume)/(math.sqrt(volume)+math.sqrt(liquidity)) if volume else 0.
- pressure=clamp(state.pressure*.55+flow*.7,-1,1)
- player_move=clamp(cfg['player_max']*(flow+.20*pressure),-cfg['player_max'],cfg['player_max'])
- regime_strength={'IC':.09,'NVA':.13,'FLX':.17}[symbol]
+ player_move,pressure,flow_baseline=order_impact(cfg,state,buy,sell)
+ regime_strength={'IC':.07,'NVA':.105,'FLX':.12}[symbol]
  regime_bias={'bull':regime_strength,'bear':-regime_strength,'sideways':0.,'storm':0.}[regime]
  momentum_bias=math.tanh(momentum/max(cfg['auto_max'],.0001))*cfg['momentum_strength']*.15
  shared_bias=clamp(state.sentiment*.12,-.12,.12)
  up_probability=clamp(.5+regime_bias+divergence_bias+momentum_bias+shared_bias,.06,.94)
- volatility=clamp(state.volatility*.84+abs(momentum)/max(cfg['auto_max'],.0001)*.12,0,1)
+ volatility=clamp(state.volatility*.84+abs(momentum)/max(cfg['auto_max'],.0001)*.12+abs(shock)*1.8,0,1)
  sample=rng.random()
  if regime=='storm' or volatility>.70: sample=max(sample,rng.random())
  elif regime=='sideways' and volatility<.22: sample=min(sample,rng.random())
  magnitude=cfg['auto_min']+(cfg['auto_max']-cfg['auto_min'])*sample
  auto_move=magnitude if rng.random()<up_probability else -magnitude
  momentum_move=clamp(momentum*cfg['momentum_strength']*(.7 if regime=='sideways' else 1),-cfg['momentum_cap'],cfg['momentum_cap'])
- total=clamp(auto_move+momentum_move+player_move,-.85,1.5)
+ shock_move=clamp(shock,-cfg['auto_max']*.6,cfg['auto_max']*.6)
+ total=clamp(auto_move+momentum_move+player_move+shock_move,-.85,1.5)
  new_price=max(.01,round(price*math.exp(total),4))
- return new_price,replace(state,fundamental=fundamental,anchor=anchor,anchor_ticks=anchor_ticks,anchor_reference=anchor_reference,regime=regime,regime_ticks=age,volatility=volatility,pressure=pressure)
+ return new_price,replace(state,fundamental=fundamental,anchor=anchor,anchor_ticks=anchor_ticks,anchor_reference=anchor_reference,regime=regime,regime_ticks=age,volatility=volatility,pressure=pressure,flow_baseline=flow_baseline)
 
 def simulate(symbol,days,seed,start_price=None,fundamental=None,regime='sideways'):
  cfg=COINS[symbol]

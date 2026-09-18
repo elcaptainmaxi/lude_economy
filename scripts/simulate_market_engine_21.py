@@ -206,6 +206,66 @@ def batch(symbol, days, runs, scenario="normal"):
     }
 
 
+def anchor_hold_test(symbol, zone_multiplier=0.60):
+    """Hold price in a genuinely new zone and measure structural recognition."""
+    cfg = COINS[symbol]
+    zone = cfg["initial"] * zone_multiplier
+    state = State(fundamental=cfg["initial"], anchor=zone, regime="sideways")
+    required = int(cfg["confirm_hours"] * 3600 / TICK_SECONDS)
+    first_move = None
+    checkpoints = {}
+    # Confirmation window + another full window for bounded convergence.
+    for tick in range(required * 2):
+        old = state.fundamental
+        anchor, anchor_ticks, fundamental = update_anchor_and_fundamental(symbol, zone, state)
+        state = replace(state, anchor=anchor, anchor_ticks=anchor_ticks, fundamental=fundamental)
+        if first_move is None and abs(fundamental - old) > 1e-12:
+            first_move = tick + 1
+        if tick + 1 in (required - 1, required, required + 1, required * 2):
+            checkpoints[tick + 1] = fundamental
+    return {
+        "symbol": symbol, "required": required, "first_move": first_move,
+        "start": cfg["initial"], "zone": zone, "final": state.fundamental,
+        "checkpoints": checkpoints,
+    }
+
+
+def transient_crash_test(symbol, crash_hours=2, multiplier=.25):
+    """A short crash must not rewrite the structural fundamental."""
+    cfg = COINS[symbol]
+    state = State(fundamental=cfg["initial"], anchor=cfg["initial"])
+    crash_ticks = int(crash_hours * 3600 / TICK_SECONDS)
+    for _ in range(crash_ticks):
+        anchor, anchor_ticks, fundamental = update_anchor_and_fundamental(
+            symbol, cfg["initial"] * multiplier, state
+        )
+        state = replace(state, anchor=anchor, anchor_ticks=anchor_ticks, fundamental=fundamental)
+    return state.fundamental / cfg["initial"] - 1.0
+
+
+def manipulation_tick_test(symbol, amount, seed=731):
+    """Same random path with/without one player order; returns price impact."""
+    cfg = COINS[symbol]
+    base = cfg["initial"]
+    state = State(fundamental=base, anchor=base)
+    history = [base] * 8
+    p0, _ = engine_step(symbol, base, state, history, rng=random.Random(seed))
+    pb, _ = engine_step(symbol, base, state, history, buy=amount, rng=random.Random(seed))
+    ps, _ = engine_step(symbol, base, state, history, sell=amount, rng=random.Random(seed))
+    return (pb / p0 - 1) * 100, (ps / p0 - 1) * 100
+
+
+def long_horizon_suite():
+    """Deterministic long-run smoke suite; intentionally modest run counts for local use."""
+    rows = []
+    for days, runs in ((90, 100), (365, 40)):
+        for symbol in COINS:
+            rows.append(batch(symbol, days, runs))
+        rows.append(batch("FLX", days, runs, "flx_extreme"))
+        rows.append(batch("NVA", days, runs, "nva_bubble"))
+    return rows
+
+
 def main():
     tests = [
         batch("IC", 30, 200),

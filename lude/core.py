@@ -15,17 +15,17 @@ from .groups import admin_group, crypto_group, lude
 from .jobs import JobsMixin
 from .money_runtime_v3 import activate, has_cents_schema
 
-# The original commands accept integer whole-INT$ amounts. Never register them
-# against a cent-denominated database: replace the registrations before the
-# v3 mixin decorates the same Discord command names.
+# Replace the old whole-INT$ slash handlers with v3 cent-aware commands.
+# /lude estado is consolidated into the richer /lude panel to respect
+# Discord's limit of 25 direct subcommands per application-command group.
 for _name in ("depositar", "retirar", "transferir", "mover-banco", "historial",
-              "slots", "blackjack", "ruleta", "coinflip", "pagar-deuda"):
+              "slots", "blackjack", "ruleta", "coinflip", "pagar-deuda", "estado"):
     lude.remove_command(_name)
 for _name in ("comprar", "vender"):
     crypto_group.remove_command(_name)
 
-from .v3_features import FullV3Mixin  # noqa: E402 (registers v3 commands)
-from .v3_casino import CasinoCommandsV3  # noqa: E402 (registers v3 casino commands)
+from .v3_features import FullV3Mixin  # noqa: E402
+from .v3_casino import CasinoCommandsV3  # noqa: E402
 
 
 class LudeEconomy(
@@ -43,8 +43,7 @@ class LudeEconomy(
         self.db_lock = threading.RLock()
         self.active_work_users: set[int] = set()
         self.bank_reservations: dict[int, int] = {}
-        # Do not create or modify a legacy DB. A copy must have been migrated
-        # offline, explicitly verified and installed while the bot is stopped.
+        # A copy must be migrated offline and explicitly installed while stopped.
         conn = self.connect()
         try:
             if not has_cents_schema(conn):

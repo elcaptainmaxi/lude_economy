@@ -23,6 +23,8 @@ jobs:
         run: python -m scripts.test_money_v3
       - name: Full v3 integration (isolated SQLite)
         run: python -m scripts.test_full_v3_integration
+      - name: Financial safety and guild registration
+        run: python -m scripts.test_v3_safety
       - name: Full Market Engine 2.1 integration (isolated SQLite)
         run: python -m scripts.test_full_v3_market21
       - name: Market Engine 2.1 pure invariants

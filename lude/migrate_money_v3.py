@@ -5,7 +5,6 @@ using a resulting copy in production, and every original backup must be kept.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -76,17 +75,19 @@ def migrate_copy(source_path: str, destination_path: str) -> dict:
         dst.execute("BEGIN IMMEDIATE")
         counts = {}
         for table, columns in MONEY_COLUMNS.items():
-            records = dst.execute(f"SELECT rowid, {', '.join(columns)} FROM {table}").fetchall()
+            # SQLite aliases rowid to an INTEGER PRIMARY KEY column. An explicit
+            # alias guarantees stable sqlite3.Row keys across every table.
+            records = dst.execute(f"SELECT rowid AS __migration_rowid, {', '.join(columns)} FROM {table}").fetchall()
             for row in records:
                 updates = [_scaled(row[col]) for col in columns]
                 assignments = ", ".join(f"{col}=?" for col in columns)
-                dst.execute(f"UPDATE {table} SET {assignments} WHERE rowid=?", (*updates, row["rowid"]))
+                dst.execute(f"UPDATE {table} SET {assignments} WHERE rowid=?", (*updates, row["__migration_rowid"]))
             counts[table] = len(records)
         dst.execute("ALTER TABLE crypto_holdings ADD COLUMN cost_basis_cents INTEGER NOT NULL DEFAULT 0")
-        positions = dst.execute("SELECT rowid, cost_basis FROM crypto_holdings").fetchall()
+        positions = dst.execute("SELECT rowid AS __migration_rowid, cost_basis FROM crypto_holdings").fetchall()
         for row in positions:
             dst.execute("UPDATE crypto_holdings SET cost_basis_cents=? WHERE rowid=?",
-                        (_scaled(row["cost_basis"], legacy_float=True), row["rowid"]))
+                        (_scaled(row["cost_basis"], legacy_float=True), row["__migration_rowid"]))
         counts["crypto_holdings"] = len(positions)
         # The legacy jackpot has REAL affinity. Use a separate integer table to
         # keep new monetary jackpot accounting exact without rewriting old data.

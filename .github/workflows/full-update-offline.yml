@@ -15,11 +15,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install discord.py for existing integration tests
+      - name: Install discord.py test dependency
         run: python -m pip install 'discord.py>=2.3,<3'
-      - name: Compile source
-        run: python -m compileall -q lude scripts/test_money_v3.py
+      - name: Compile all modules
+        run: python -m compileall -q lude scripts
       - name: Exact money and offline migration
         run: python -m scripts.test_money_v3
-      - name: Existing market integration
-        run: python -m scripts.test_crypto_21_real_cog
+      - name: Full v3 integration (isolated SQLite)
+        run: python -m scripts.test_full_v3_integration
+      - name: Market Engine 2.1 pure invariants
+        run: python -m scripts.test_market_engine_21

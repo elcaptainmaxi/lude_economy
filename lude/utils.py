@@ -1,7 +1,18 @@
 from . import config
 
+# Enabled only after the v3 schema marker was verified, before any cog runs.
+MONEY_CENTS_ACTIVE = False
+
 
 def money(value: int | float) -> str:
+    if MONEY_CENTS_ACTIVE:
+        from decimal import Decimal
+        from .money_v3 import format_cents, round_cents
+        if isinstance(value, int):
+            return format_cents(value)
+        # Float inputs are legacy market prices/estimated investments in INT$;
+        # persisted wallet/account/debt values must always be integer cents.
+        return format_cents(round_cents(Decimal(str(value))))
     if isinstance(value, float) and not value.is_integer():
         formatted = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return f"{config.CURRENCY} {formatted}"

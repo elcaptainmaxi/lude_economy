@@ -5,43 +5,49 @@ partial sales. This module does not migrate or mutate any user data.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 CENT = Decimal("0.01")
 QUANTUM = Decimal("0.00000001")
 MAX_SQLITE_INT = 2**63 - 1
+_MONEY_INPUT = re.compile(r"(?:0|[1-9][0-9]*)(?:[.,][0-9]{1,2})?\Z", re.ASCII)
 
 
 def decimal(value) -> Decimal:
     if isinstance(value, float):
         value = str(value)
-    result = Decimal(str(value))
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("El importe debe ser numérico.") from exc
     if not result.is_finite():
         raise ValueError("El importe debe ser finito.")
     return result
 
 
 def cents(text: str, *, allow_zero: bool = False) -> int:
-    """Parse an INT$ display amount strictly, without binary float rounding."""
+    """Parse an INT$ display amount strictly, without binary float rounding.
+
+    Reject exponents, grouping separators and excessively large inputs BEFORE
+    Decimal.quantize: quantizing 1e100 used to raise InvalidOperation in CI.
+    """
     if isinstance(text, bool):
         raise ValueError("Importe inválido.")
-    text = str(text).strip().replace(" ", "")
-    if not text or text.count(",") > 1 or ("," in text and "." in text):
+    value = str(text).strip()
+    if not _MONEY_INPUT.fullmatch(value):
         raise ValueError("Usá un importe como 7500,25 (máximo dos decimales).")
-    text = text.replace(",", ".")
-    try:
-        amount = decimal(text)
-    except (ValueError, InvalidOperation) as exc:
-        raise ValueError("Importe inválido.") from exc
-    if amount != amount.quantize(CENT):
-        raise ValueError("Los importes admiten hasta dos decimales.")
-    if amount < 0 or (not allow_zero and amount == 0):
-        raise ValueError("El importe debe ser mayor que cero.")
-    scaled = int(amount * 100)
-    if scaled > MAX_SQLITE_INT:
+    integer_part, separator, fraction = value.replace(",", ".").partition(".")
+    # This bound also prevents processing arbitrarily large integer strings.
+    if len(integer_part) > 17:
         raise ValueError("El importe excede el límite permitido.")
-    return scaled
+    amount = int(integer_part) * 100 + int((fraction + "00")[:2] if separator else "00")
+    if amount > MAX_SQLITE_INT:
+        raise ValueError("El importe excede el límite permitido.")
+    if amount == 0 and not allow_zero:
+        raise ValueError("El importe debe ser mayor que cero.")
+    return amount
 
 
 def format_cents(value: int) -> str:

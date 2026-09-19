@@ -23,5 +23,7 @@ jobs:
         run: python -m scripts.test_money_v3
       - name: Full v3 integration (isolated SQLite)
         run: python -m scripts.test_full_v3_integration
+      - name: Full Market Engine 2.1 integration (isolated SQLite)
+        run: python -m scripts.test_full_v3_market21
       - name: Market Engine 2.1 pure invariants
         run: python -m scripts.test_market_engine_21

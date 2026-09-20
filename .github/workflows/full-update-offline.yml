@@ -25,6 +25,8 @@ jobs:
         run: python -m scripts.test_full_v3_integration
       - name: Financial safety and guild registration
         run: python -m scripts.test_v3_safety
+      - name: Offline release preparation and source immutability
+        run: python -m scripts.test_full_v3_preparation
       - name: Full Market Engine 2.1 integration (isolated SQLite)
         run: python -m scripts.test_full_v3_market21
       - name: Market Engine 2.1 pure invariants

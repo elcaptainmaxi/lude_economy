@@ -1,4 +1,5 @@
 import threading
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -14,6 +15,7 @@ from .embeds import EmbedsMixin
 from .groups import admin_group, crypto_group, lude
 from .jobs import JobsMixin
 from .money_runtime_v3 import activate, has_cents_schema
+from .v3_guards import install_guards
 
 # Register cent-aware commands instead of legacy whole-INT$ handlers.
 # /lude estado is consolidated into /lude panel; /lude mover-banco is
@@ -44,6 +46,8 @@ class LudeEconomy(
         self.db_lock = threading.RLock()
         self.active_work_users: set[int] = set()
         self.bank_reservations: dict[int, int] = {}
+        if not Path(config.DB_PATH).is_file():
+            raise RuntimeError("No existe la base migrada de Lude v3. No se creará una base nueva ni se perderán saldos.")
         conn = self.connect()
         try:
             if not has_cents_schema(conn):
@@ -56,11 +60,16 @@ class LudeEconomy(
         with self.db_lock:
             conn = self.connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
+                install_guards(conn)
                 conn.execute("""CREATE TABLE IF NOT EXISTS crypto_sale_receipts (
                     operation_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
                     symbol TEXT NOT NULL, credited_cents INTEGER NOT NULL,
                     created_at INTEGER NOT NULL)""")
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
         self.load_runtime_settings()

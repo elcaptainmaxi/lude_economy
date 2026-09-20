@@ -29,6 +29,8 @@ jobs:
         run: python -m scripts.test_full_v3_preparation
       - name: Independent backup and monetary overflow guards
         run: python -m scripts.test_full_v3_backup
+      - name: No-terminal bot.py boot preparation
+        run: python -m scripts.test_bisect_boot_v3
       - name: Full Market Engine 2.1 integration (isolated SQLite)
         run: python -m scripts.test_full_v3_market21
       - name: Market Engine 2.1 pure invariants
